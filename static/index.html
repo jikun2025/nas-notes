@@ -73,6 +73,16 @@
     <label for="deviceInput">设备标识（用于同步冲突裁决）</label>
     <input id="deviceInput" type="text" placeholder="自动生成" autocomplete="off">
 
+    <label for="syncMode">同步方式</label>
+    <select id="syncMode">
+      <option value="auto">自动（编辑后、解锁、联网及定时同步）</option>
+      <option value="manual">手动（仅点击左侧「同步」按钮）</option>
+    </select>
+
+    <label for="syncInterval">自动同步间隔（秒）</label>
+    <input id="syncInterval" type="number" min="10" max="86400" step="10" value="60" inputmode="numeric">
+    <p class="muted">可填 10～86400 秒（10 秒～24 小时），仅「自动」模式生效。设置只保存在本机。</p>
+
     <label for="imageQuality">图片压缩强度</label>
     <select id="imageQuality">
       <option value="balanced">均衡（推荐，正文文字仍清晰）</option>
@@ -97,7 +107,7 @@
     </div>
     <input id="importFile" type="file" accept="application/json,.json" hidden>
 
-    <p class="muted">离线修改先写入本机 IndexedDB（仅密文），联网后自动推送。多端同时编辑按时间戳裁决，时间相同按设备标识裁决。</p>
+    <p class="muted">离线修改先写入本机 IndexedDB（仅密文）。自动模式下联网后推送，手动模式下会一直保留到点击「同步」。多端同时编辑按时间戳裁决，时间相同按设备标识裁决。</p>
     <div class="dialog-actions">
       <button id="cancelSettings" class="ghost" type="button">取消</button>
       <button id="saveSettings" class="primary" type="button">保存</button>

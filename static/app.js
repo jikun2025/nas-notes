@@ -33,6 +33,11 @@ const AUDIO_PROFILES = {
   tiny: { label: '极小', bps: 20000 }
 };
 
+// 同步：auto = 编辑后/解锁/联网/定时自动同步；manual = 仅点「同步」按钮
+const SYNC_INTERVAL_MIN = 10;
+const SYNC_INTERVAL_MAX = 86400;
+const SYNC_INTERVAL_DEFAULT = 60;
+
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 
@@ -56,6 +61,8 @@ const els = {
   settingsDialog: document.getElementById('settingsDialog'),
   tokenInput: document.getElementById('tokenInput'),
   deviceInput: document.getElementById('deviceInput'),
+  syncMode: document.getElementById('syncMode'),
+  syncInterval: document.getElementById('syncInterval'),
   imageQuality: document.getElementById('imageQuality'),
   audioQuality: document.getElementById('audioQuality'),
   exportBtn: document.getElementById('exportBtn'),
@@ -89,9 +96,12 @@ let deviceId = '';
 let token = '';
 let imageQuality = 'balanced';
 let audioQuality = 'balanced';
+let syncMode = 'auto';
+let syncIntervalSec = SYNC_INTERVAL_DEFAULT;
 let syncing = false;
 let saveTimer = null;
 let syncTimer = null;
+let syncPollTimer = null;
 let toastTimer = null;
 let mediaRecorder = null;
 let recordChunks = [];
@@ -311,6 +321,37 @@ function estimateTextHeavy(image) {
 function setBadge(text, kind) {
   els.syncBadge.textContent = text;
   els.syncBadge.className = 'badge' + (kind ? ' ' + kind : '');
+}
+
+function normalizeSyncInterval(value) {
+  const n = Math.round(Number(value));
+  if (!Number.isFinite(n)) return SYNC_INTERVAL_DEFAULT;
+  return Math.min(SYNC_INTERVAL_MAX, Math.max(SYNC_INTERVAL_MIN, n));
+}
+
+function stopAutoSync() {
+  if (syncPollTimer) {
+    clearInterval(syncPollTimer);
+    syncPollTimer = null;
+  }
+}
+
+function startAutoSync() {
+  stopAutoSync();
+  if (syncMode !== 'auto') return;
+  syncPollTimer = setInterval(() => {
+    if (cryptoKey && navigator.onLine && !document.hidden) sync();
+  }, syncIntervalSec * 1000);
+}
+
+async function updateManualBadge() {
+  if (syncMode !== 'manual' || !cryptoKey) return;
+  try {
+    const pending = (await idbGetAll(STORE_OUT)).length;
+    setBadge(pending ? `待同步 ${pending}` : '手动模式', pending ? 'offline' : '');
+  } catch (error) {
+    console.warn('[NasNotes] count outbox failed', error);
+  }
 }
 
 function setSaveState(text) {
@@ -924,7 +965,13 @@ async function handleUnlock() {
     setSaveState('已解锁');
     renderList();
     renderEditor();
-    await sync();
+    if (syncMode === 'auto') {
+      startAutoSync();
+      await sync();
+    } else {
+      stopAutoSync();
+      await updateManualBadge();
+    }
   } catch (error) {
     console.warn('[NasNotes] unlock failed', error);
     showLockError('操作失败：' + (error && error.message ? error.message : '未知错误'));
@@ -961,6 +1008,8 @@ async function lockApp() {
     if (note && cryptoKey) await queueUpsert(note);
   }
   stopRecording();
+  stopAutoSync();
+  clearTimeout(syncTimer);
   cryptoKey = null;
   plainCache.clear();
   currentId = null;
@@ -1009,6 +1058,7 @@ async function queueUpsert(note) {
     queued_at: Date.now()
   });
   triggerSync();
+  updateManualBadge();
   return updated;
 }
 
@@ -1029,6 +1079,7 @@ async function queueDelete(noteId) {
     queued_at: Date.now()
   });
   triggerSync();
+  updateManualBadge();
 }
 
 // ---------- 同步 ----------
@@ -1122,9 +1173,10 @@ async function sync() {
   }
 }
 
-function triggerSync() {
+function triggerSync(delay = 300) {
+  if (syncMode !== 'auto' || !cryptoKey) return;
   clearTimeout(syncTimer);
-  syncTimer = setTimeout(sync, 300);
+  syncTimer = setTimeout(sync, delay);
 }
 
 // ---------- 渲染（明文只来自内存） ----------
@@ -1430,14 +1482,21 @@ function flushPendingEdit() {
 
 window.addEventListener('pagehide', flushPendingEdit);
 document.addEventListener('visibilitychange', () => {
-  if (document.visibilityState === 'hidden') flushPendingEdit();
+  if (document.visibilityState === 'hidden') {
+    flushPendingEdit();
+  } else if (syncMode === 'auto' && cryptoKey) {
+    triggerSync(500);
+  }
 });
 
 window.addEventListener('online', () => {
   if (!cryptoKey) return;
+  if (syncMode === 'manual') {
+    updateManualBadge();
+    return;
+  }
   setBadge('联网中');
-  clearTimeout(syncTimer);
-  syncTimer = setTimeout(sync, 200);
+  triggerSync(200);
 });
 window.addEventListener('offline', () => {
   if (cryptoKey) setBadge('离线', 'offline');
@@ -1446,6 +1505,8 @@ window.addEventListener('offline', () => {
 els.settingsBtn.addEventListener('click', () => {
   els.tokenInput.value = token;
   els.deviceInput.value = deviceId;
+  els.syncMode.value = syncMode;
+  els.syncInterval.value = String(syncIntervalSec);
   els.imageQuality.value = imageQuality;
   els.audioQuality.value = audioQuality;
   els.settingsDialog.showModal();
@@ -1454,15 +1515,35 @@ els.cancelSettings.addEventListener('click', () => els.settingsDialog.close());
 els.saveSettings.addEventListener('click', () => {
   token = els.tokenInput.value.trim();
   deviceId = els.deviceInput.value.trim() || genId();
+  const nextMode = els.syncMode.value === 'manual' ? 'manual' : 'auto';
+  const rawInterval = els.syncInterval.value;
+  const nextInterval = normalizeSyncInterval(rawInterval);
   imageQuality = IMAGE_PROFILES[els.imageQuality.value] ? els.imageQuality.value : 'balanced';
   audioQuality = AUDIO_PROFILES[els.audioQuality.value] ? els.audioQuality.value : 'balanced';
   localStorage.setItem('nn-token', token);
   localStorage.setItem('nn-device', deviceId);
+  localStorage.setItem('nn-sync-mode', nextMode);
+  localStorage.setItem('nn-sync-interval', String(nextInterval));
   localStorage.setItem('nn-image-quality', imageQuality);
   localStorage.setItem('nn-audio-quality', audioQuality);
   els.settingsDialog.close();
+
+  const modeChanged = nextMode !== syncMode || nextInterval !== syncIntervalSec;
+  syncMode = nextMode;
+  syncIntervalSec = nextInterval;
   clearTimeout(syncTimer);
-  syncTimer = setTimeout(sync, 100);
+  if (syncMode === 'auto') {
+    startAutoSync();
+    if (cryptoKey) triggerSync(100);
+  } else {
+    stopAutoSync();
+    updateManualBadge();
+  }
+  if (String(rawInterval) !== String(nextInterval)) {
+    toast(`同步间隔已限制为 ${SYNC_INTERVAL_MIN}～${SYNC_INTERVAL_MAX} 秒`);
+  } else if (modeChanged) {
+    toast(syncMode === 'auto' ? `已切换自动同步，每 ${syncIntervalSec} 秒一次` : '已切换手动同步，需点击「同步」按钮');
+  }
 });
 
 els.exportBtn.addEventListener('click', exportBackup);
@@ -1480,6 +1561,8 @@ els.importFile.addEventListener('change', () => {
 
   deviceId = localStorage.getItem('nn-device') || genId();
   token = localStorage.getItem('nn-token') || '';
+  syncMode = localStorage.getItem('nn-sync-mode') === 'manual' ? 'manual' : 'auto';
+  syncIntervalSec = normalizeSyncInterval(localStorage.getItem('nn-sync-interval') || SYNC_INTERVAL_DEFAULT);
   imageQuality = localStorage.getItem('nn-image-quality') || 'balanced';
   audioQuality = localStorage.getItem('nn-audio-quality') || 'balanced';
   if (!IMAGE_PROFILES[imageQuality]) imageQuality = 'balanced';
