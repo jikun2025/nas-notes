@@ -90,7 +90,7 @@ ok('图片渲染带 data-att，才能往返成占位符', () => {
 });
 
 ok('Service Worker 缓存已升版并纳入 html2md.js', () => {
-  assert.match(sw, /const CACHE = 'nas-notes-v19'/);
+  assert.match(sw, /const CACHE = 'nas-notes-v20'/);
   assert.match(sw, /'\/html2md\.js'/);
 });
 

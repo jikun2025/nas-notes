@@ -142,8 +142,45 @@ ok('分栏预览随输入实时更新，双栏滚动联动', () => {
   assert.match(css, /body\.view-view \.source-pane/);
 });
 
-ok('Service Worker 缓存已升版到 v19', () => {
-  assert.match(sw, /const CACHE = 'nas-notes-v19'/);
+ok('分类可同时存在多个：本机加密清单保住空分类', () => {
+  assert.match(app, /const FOLDERS_META_KEY = 'folders'/);
+  assert.match(app, /let folderRegistry = \[\]/);
+  assert.match(app, /async function loadFolderRegistry\(\)/);
+  assert.match(app, /async function persistFolderRegistry\(\)/);
+  const all = app.slice(app.indexOf('function allFolders()'), app.indexOf('// 分类导航（三区布局的左栏）'));
+  assert.match(all, /new Set\(folderRegistry\)/);
+  // 解锁后读清单、锁屏时清内存
+  assert.match(app, /await loadFolderRegistry\(\)/);
+  assert.match(app, /plainCache\.clear\(\);\s*folderRegistry = \[\];/);
+  // 新建分类只登记名字；当前便签已有分类时不把它搬走（否则旧分类会被"覆盖"）
+  const create = app.slice(app.indexOf('els.newFolderBtn.addEventListener'),
+    app.indexOf('els.renameFolderBtn.addEventListener'));
+  assert.match(create, /registerFolder\(name\)/);
+  assert.match(create, /await persistFolderRegistry\(\)/);
+  assert.match(create, /if \(plain && !current\)/);
+  assert.match(create, /moved\s*\?/);
+  // 改名 / 删除同步清单
+  assert.match(app, /async function renameFolder\(from\)/);
+  assert.match(app, /async function deleteFolder\(from\)/);
+  assert.match(app, /if \(unregisterFolder\(source\)\) await persistFolderRegistry\(\)/);
+  // 空分类没有便签可以打开，给它右键/长按菜单
+  assert.match(html, /id="folderContextMenu"/);
+  assert.match(html, /data-action="rename">✏️ 重命名分类…/);
+  assert.match(app, /els\.folderRail\.addEventListener\('contextmenu'/);
+  // 清库时一并清掉清单
+  assert.match(app, /await idbDelete\(STORE_META, FOLDERS_META_KEY\)/);
+});
+
+ok('分类改名/删除按钮不再永远隐藏', () => {
+  const block = app.slice(app.indexOf('function renderFolderOptions()'),
+    app.indexOf('// 打开弹窗：老版安卓 WebView'));
+  assert.match(block, /els\.renameFolderBtn\.hidden = !hasCurrent/);
+  assert.match(block, /els\.deleteFolderBtn\.hidden = !hasCurrent/);
+  assert.doesNotMatch(block, /const custom =/);
+});
+
+ok('Service Worker 缓存已升版到 v20', () => {
+  assert.match(sw, /const CACHE = 'nas-notes-v20'/);
 });
 
 console.log('\nUI overhaul tests: ' + pass + ' pass');

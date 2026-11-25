@@ -288,6 +288,12 @@
     <button type="button" role="menuitem" data-action="delete" class="danger-item">🗑 删除便签</button>
   </div>
 
+  <!-- 分类栏右键 / 长按菜单（空分类也能改名或删除） -->
+  <div id="folderContextMenu" class="context-menu" role="menu" hidden>
+    <button type="button" role="menuitem" data-action="rename">✏️ 重命名分类…</button>
+    <button type="button" role="menuitem" data-action="delete" class="danger-item">🗑 删除分类</button>
+  </div>
+
   <dialog id="folderDialog" class="compact-dialog" aria-label="调整分类">
     <h3 id="folderDialogTitle">调整分类</h3>
     <label for="folderDialogSelect">选择分类</label>

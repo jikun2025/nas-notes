@@ -116,6 +116,7 @@ const els = {
   attachCount: document.getElementById('attachCount'),
   attachmentList: document.getElementById('attachmentList'),
   noteContextMenu: document.getElementById('noteContextMenu'),
+  folderContextMenu: document.getElementById('folderContextMenu'),
   folderDialog: document.getElementById('folderDialog'),
   folderDialogTitle: document.getElementById('folderDialogTitle'),
   folderDialogSelect: document.getElementById('folderDialogSelect'),
@@ -163,6 +164,7 @@ let editorFont = 'normal';
 let contextNoteId = null;
 let longPressTimer = null;
 let longPressFired = false;
+let folderLongPressTimer = null;
 
 // ---------- 外观（本机设置，不涉及加密数据） ----------
 const EDITOR_FONT_PX = { small: '13px', normal: '15px', large: '18px', xlarge: '21px' };
@@ -1126,6 +1128,7 @@ async function handleUnlock() {
     els.passphraseInput.value = '';
     els.confirmInput.value = '';
     await rebuildPlainCache();
+    await loadFolderRegistry();
     setSaveState('已解锁');
     renderList();
     renderEditor();
@@ -1244,6 +1247,7 @@ async function lockApp() {
   cryptoKey = null;
   wkeyBytes = null;
   plainCache.clear();
+  folderRegistry = [];
   currentId = null;
   document.body.classList.remove('show-editor');
   els.titleInput.value = '';
@@ -1415,8 +1419,61 @@ function triggerSync(delay = 300) {
 const UNGROUPED = '未分类';
 const collapsedFolders = new Set();   // 仅内存：折叠的分类名
 
+// 分类清单：分类原本只能从便签的 folder 字段反推，于是「空分类」根本不存在——
+// 连续新建两个分类时，旧分类下没有便签就会消失，看起来像被新分类覆盖了。
+// 这里额外维护一份本机分类清单（与便签一样用 wkey 加密后存 IndexedDB），
+// 让空分类也能留着；有便签的分类仍随便签同步到其他设备。
+const FOLDERS_META_KEY = 'folders';
+let folderRegistry = [];
+
+function normalizeFolderName(name) {
+  const value = typeof name === 'string' ? name.trim().slice(0, 100) : '';
+  return value === UNGROUPED ? '' : value;
+}
+
+function registerFolder(name) {
+  const value = normalizeFolderName(name);
+  if (!value || folderRegistry.indexOf(value) >= 0) return false;
+  folderRegistry.push(value);
+  folderRegistry.sort((a, b) => a.localeCompare(b, 'zh-CN'));
+  return true;
+}
+
+function unregisterFolder(name) {
+  const value = normalizeFolderName(name);
+  const next = folderRegistry.filter((item) => item !== value);
+  if (next.length === folderRegistry.length) return false;
+  folderRegistry = next;
+  return true;
+}
+
+async function loadFolderRegistry() {
+  folderRegistry = [];
+  if (!cryptoKey) return;
+  try {
+    const row = await idbGet(STORE_META, FOLDERS_META_KEY);
+    const parts = String((row && row.value) || '').split(':');
+    if (parts.length !== 2) return;
+    const list = await decryptJSON(cryptoKey, parts[0], parts[1]);
+    if (Array.isArray(list)) list.forEach((name) => registerFolder(name));
+  } catch (error) {
+    console.warn('[NasNotes] 分类清单解密失败，按便签重建', error);
+    folderRegistry = [];
+  }
+}
+
+async function persistFolderRegistry() {
+  if (!cryptoKey) return;
+  try {
+    const sealed = await encryptJSON(cryptoKey, folderRegistry.slice());
+    await idbPut(STORE_META, { key: FOLDERS_META_KEY, value: sealed.iv + ':' + sealed.payload });
+  } catch (error) {
+    console.warn('[NasNotes] 保存分类清单失败', error);
+  }
+}
+
 function allFolders() {
-  const names = new Set();
+  const names = new Set(folderRegistry);
   for (const note of notesCache.values()) {
     if (note.deleted) continue;
     const plain = plainCache.get(note.id);
@@ -1468,11 +1525,12 @@ function renderFolderOptions() {
   }
   els.folderSelect.innerHTML = parts.join('');
   els.folderSelect.value = current;
+  // 当前便签已归类时就可以给整个分类改名/删除（原来判断成“分类不在清单里才显示”，
+  // 而 allFolders() 本身包含当前便签的分类，这两个按钮等于永远不出现）。
   const hasCurrent = Boolean(current);
-  const custom = hasCurrent && !folders.includes(current);
-  els.renameFolderBtn.hidden = !custom;
-  els.deleteFolderBtn.hidden = !custom;
-  if (custom) {
+  els.renameFolderBtn.hidden = !hasCurrent;
+  els.deleteFolderBtn.hidden = !hasCurrent;
+  if (hasCurrent) {
     els.renameFolderBtn.title = '重命名分类「' + current + '」';
     els.deleteFolderBtn.title = '删除分类「' + current + '」（其中便签移入未分类）';
   }
@@ -1963,8 +2021,10 @@ els.resetVaultConfirmBtn.addEventListener('click', async () => {
     wkeyBytes = null;
     notesCache.clear();
     plainCache.clear();
+    folderRegistry = [];
     try {
       await idbPut(STORE_META, { key: 'vault', value: 'null' });
+      await idbDelete(STORE_META, FOLDERS_META_KEY);
       const db = await dbPromise;
       for (const storeName of [STORE_NOTES, STORE_OUT]) {
         const tx = db.transaction(storeName, 'readwrite');
@@ -2113,6 +2173,7 @@ els.noteList.addEventListener('keydown', (event) => {
 // ---------- 便签右键 / 长按操作 ----------
 function showContextMenu(x, y, id) {
   contextNoteId = id;
+  if (els.folderContextMenu) hideFolderContextMenu();
   const menu = els.noteContextMenu;
   menu.hidden = false;
   const w = menu.offsetWidth || 180;
@@ -2166,11 +2227,107 @@ els.noteContextMenu.addEventListener('click', async (event) => {
   else if (action.dataset.action === 'delete') deleteNoteById(id);
 });
 
+// ---------- 分类栏右键 / 长按操作（空分类也能改名或删除） ----------
+let contextFolderName = '';
+
+function showFolderContextMenu(x, y, name) {
+  contextFolderName = name;
+  hideContextMenu();
+  const menu = els.folderContextMenu;
+  menu.hidden = false;
+  const w = menu.offsetWidth || 190;
+  const h = menu.offsetHeight || 96;
+  menu.style.left = Math.max(8, Math.min(x, window.innerWidth - w - 8)) + 'px';
+  menu.style.top = Math.max(8, Math.min(y, window.innerHeight - h - 8)) + 'px';
+}
+
+function hideFolderContextMenu() {
+  els.folderContextMenu.hidden = true;
+  contextFolderName = '';
+}
+
+async function renameFolder(from) {
+  const source = (from || '').trim();
+  if (!source) return;
+  const to = await promptFolderName(source, '重命名分类「' + source + '」为：');
+  if (!to || to === source) return;
+  const merged = allFolders().indexOf(to) >= 0;
+  const touched = await setFolderForAll(source, to);
+  let changed = unregisterFolder(source);
+  if (registerFolder(to)) changed = true;
+  if (changed) await persistFolderRegistry();
+  renderFolderOptions();
+  renderList();
+  toast(merged
+    ? '已把「' + source + '」的 ' + touched + ' 条便签并入「' + to + '」'
+    : '分类「' + source + '」已重命名为「' + to + '」（' + touched + ' 条便签）');
+}
+
+async function deleteFolder(from) {
+  const source = (from || '').trim();
+  if (!source) return;
+  const yes = await askConfirm('删除分类',
+    '删除分类「' + source + '」？其中便签会移入' + UNGROUPED + '，便签本身不会删除。', '删除分类');
+  if (!yes) return;
+  const touched = await setFolderForAll(source, '');
+  if (unregisterFolder(source)) await persistFolderRegistry();
+  const plain = plainCache.get(currentId);
+  if (plain && (plain.folder || '').trim() === source) plain.folder = '';
+  renderFolderOptions();
+  renderList();
+  toast('分类「' + source + '」已删除，' + touched + ' 条便签移入' + UNGROUPED);
+}
+
+function folderMenuTarget(node) {
+  const item = node && node.closest ? node.closest('.rail-item') : null;
+  const name = item ? (item.dataset.folder || '').trim() : '';
+  // 「全部便签」和「未分类」是虚拟分类，没有可改名/删除的实体
+  if (!name || name === UNGROUPED) return '';
+  return name;
+}
+
+els.folderRail.addEventListener('contextmenu', (event) => {
+  const name = folderMenuTarget(event.target);
+  if (!name) return;
+  event.preventDefault();
+  showFolderContextMenu(event.clientX, event.clientY, name);
+});
+
+els.folderRail.addEventListener('touchstart', (event) => {
+  const name = folderMenuTarget(event.target);
+  if (!name || event.touches.length !== 1) return;
+  const touch = event.touches[0];
+  const x = touch.clientX;
+  const y = touch.clientY;
+  clearTimeout(folderLongPressTimer);
+  folderLongPressTimer = setTimeout(() => { showFolderContextMenu(x, y, name); }, 520);
+}, { passive: true });
+
+['touchmove', 'touchend', 'touchcancel'].forEach((type) => {
+  els.folderRail.addEventListener(type, () => {
+    clearTimeout(folderLongPressTimer);
+    folderLongPressTimer = null;
+  }, { passive: true });
+});
+
+els.folderContextMenu.addEventListener('click', async (event) => {
+  const action = event.target.closest('[data-action]');
+  if (!action) return;
+  const name = contextFolderName;
+  hideFolderContextMenu();
+  if (!name) return;
+  if (action.dataset.action === 'rename') renameFolder(name);
+  else if (action.dataset.action === 'delete') deleteFolder(name);
+});
+
 document.addEventListener('click', (event) => {
   if (!els.noteContextMenu.hidden && !event.target.closest('#noteContextMenu')) hideContextMenu();
+  if (!els.folderContextMenu.hidden && !event.target.closest('#folderContextMenu')) hideFolderContextMenu();
 });
 document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape' && !els.noteContextMenu.hidden) hideContextMenu();
+  if (event.key !== 'Escape') return;
+  if (!els.noteContextMenu.hidden) hideContextMenu();
+  if (!els.folderContextMenu.hidden) hideFolderContextMenu();
 });
 
 async function openFolderDialog(id) {
@@ -2200,6 +2357,8 @@ async function openFolderDialog(id) {
       name = (els.folderDialogNew.value || '').trim().slice(0, 100);
       if (!name) { toast('请输入分类名称'); return; }
       if (name === UNGROUPED) { toast('「' + UNGROUPED + '」是保留名称'); return; }
+      // 新分类名先登记到本机清单，即使这条便签以后又被移走，分类也会留着
+      if (registerFolder(name)) await persistFolderRegistry();
     }
     const target = plainCache.get(id);
     if (!target) return;
@@ -2809,44 +2968,38 @@ els.newFolderBtn.addEventListener('click', async () => {
   if (!currentId) { toast('请先打开一条便签'); return; }
   const name = await promptFolderName('', '新建分类名称');
   if (!name) return;
+  if (allFolders().indexOf(name) >= 0) { toast('分类「' + name + '」已存在'); return; }
+  registerFolder(name);
+  await persistFolderRegistry();
+  // 当前便签还没归类时顺便移入新分类；已经有分类就不动它，
+  // 免得「新建」把原来的分类里的最后一条便签带走，看起来像被覆盖。
   const plain = currentPlain();
-  if (plain) {
+  const current = plain ? (plain.folder || '').trim() : '';
+  let moved = false;
+  if (plain && !current) {
     plain.folder = name;
     plainCache.set(currentId, plain);
     const note = notesCache.get(currentId);
     if (note) await queueUpsert(note);
+    moved = true;
   }
   renderFolderOptions();
   renderList();
-  toast('已新建分类「' + name + '」，当前便签已移入');
+  toast(moved
+    ? '已新建分类「' + name + '」，当前便签已移入'
+    : '已新建分类「' + name + '」，可从分类下拉或右键菜单移入');
 });
 
 els.renameFolderBtn.addEventListener('click', async () => {
   const plain = currentPlain();
   if (!plain) return;
-  const from = (plain.folder || '').trim();
-  if (!from) return;
-  const to = await promptFolderName(from, '重命名分类「' + from + '」为：');
-  if (!to || to === from) return;
-  const touched = await setFolderForAll(from, to);
-  if (plain === plainCache.get(currentId)) plain.folder = to;
-  renderFolderOptions();
-  renderList();
-  toast('分类「' + from + '」已重命名为「' + to + '」（' + touched + ' 条便签）');
+  await renameFolder((plain.folder || '').trim());
 });
 
 els.deleteFolderBtn.addEventListener('click', async () => {
   const plain = currentPlain();
   if (!plain) return;
-  const from = (plain.folder || '').trim();
-  if (!from) return;
-  const yes = await askConfirm('删除分类', '删除分类「' + from + '」？其中便签会移入' + UNGROUPED + '，便签本身不会删除。', '删除分类');
-  if (!yes) return;
-  const touched = await setFolderForAll(from, '');
-  if (plain === plainCache.get(currentId)) plain.folder = '';
-  renderFolderOptions();
-  renderList();
-  toast('分类「' + from + '」已删除，' + touched + ' 条便签移入' + UNGROUPED);
+  await deleteFolder((plain.folder || '').trim());
 });
 els.attachmentList.addEventListener('click', (event) => {
   const remove = event.target.closest('[data-remove]');

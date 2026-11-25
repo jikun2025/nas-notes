@@ -43,7 +43,7 @@ node tools/test_cryptofb.js            # crypto 兜底层字节级互操作 49 �
 node tools/test_legacy_migration.js    # 旧库→wkey 包裹 端到端迁移 16 项
 node tools/test_md_table_fs.js         # Markdown 表格/字号渲染 22 项
 node tools/test_login_ui.js            # 登录页隐藏字段/清库警示 7 项
-node tools/test_ui_overhaul.js         # 三区布局/工具栏两行与手机横滑/标题计数与保存/两级设置/右键菜单 12 项
+node tools/test_ui_overhaul.js         # 三区布局/工具栏两行与手机横滑/标题计数与保存/两级设置/右键菜单/分类清单 14 项
 node tools/test_rich_editor.js         # 富文本模式 + HTML→Markdown 往返 11 项（真实浏览器）
 ```
 
