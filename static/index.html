@@ -24,7 +24,14 @@
       <input id="confirmInput" type="password" autocomplete="new-password" placeholder="重复密码" hidden>
       <p id="lockError" class="lock-error" hidden></p>
       <button id="unlockBtn" class="primary block" type="button">登录</button>
-      <p class="muted tiny">密码丢失无法恢复。忘记密码？<button id="resetVaultBtn" class="linkbtn" type="button">清空加密库重新开始</button></p>
+      <p class="muted tiny">密码丢失无法恢复。<button id="resetVaultBtn" class="linkbtn" type="button">忘记密码？</button></p>
+      <div id="resetPanel" class="reset-panel" hidden>
+        <p class="reset-warning"><b>危险操作：不可撤销</b><br>将永久删除服务器和本机上的<b>全部便签、图片和录音</b>，并重建空加密库。账户名和密码不会改变。</p>
+        <label for="resetConfirmInput">请输入「清空数据」以确认</label>
+        <input id="resetConfirmInput" type="text" placeholder="清空数据" autocomplete="off" spellcheck="false">
+        <button id="resetVaultConfirmBtn" class="danger block small" type="button">确认删除全部数据</button>
+        <button id="resetCancelBtn" class="ghost block small" type="button">取消</button>
+      </div>
     </div>
   </div>
 

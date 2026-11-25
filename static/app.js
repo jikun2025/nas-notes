@@ -52,6 +52,10 @@ const els = {
   lockError: document.getElementById('lockError'),
   unlockBtn: document.getElementById('unlockBtn'),
   resetVaultBtn: document.getElementById('resetVaultBtn'),
+  resetPanel: document.getElementById('resetPanel'),
+  resetConfirmInput: document.getElementById('resetConfirmInput'),
+  resetVaultConfirmBtn: document.getElementById('resetVaultConfirmBtn'),
+  resetCancelBtn: document.getElementById('resetCancelBtn'),
   syncBadge: document.getElementById('syncBadge'),
   newBtn: document.getElementById('newBtn'),
   searchInput: document.getElementById('searchInput'),
@@ -863,6 +867,8 @@ function showLockScreen(mode) {
     : '输入账户名和密码解锁。密码只在内存中用于解密，服务器上只存哈希和密文。';
   els.confirmLabel.hidden = true;
   els.confirmInput.hidden = true;
+  els.resetPanel.hidden = true;
+  els.resetConfirmInput.value = '';
   els.unlockBtn.textContent = '登录';
   els.lockError.hidden = true;
   if (!els.usernameInput.value) els.usernameInput.value = DEFAULT_USERNAME;
@@ -1591,19 +1597,33 @@ els.confirmInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') handleUnlock();
 });
 
-// 忘记口令逃生口：清空服务端加密库与全部密文，本机随之重置。
-els.resetVaultBtn.addEventListener('click', async () => {
-  if (!confirm('确定清空加密库吗？服务器上的全部便签密文将被删除且无法恢复！\n（登录口令本身不变，只是重建加密库。）')) return;
-  if (!confirm('再次确认：删除全部便签数据、重建空加密库？此操作不可撤销。')) return;
+// 忘记密码逃生口：先展开明确的危险操作区，必须手动输入「清空数据」。
+// 不使用 window.confirm —— 安卓 WebView 默认不弹出原生对话框。
+els.resetVaultBtn.addEventListener('click', () => {
   els.lockError.hidden = true;
+  els.resetPanel.hidden = !els.resetPanel.hidden;
+  if (!els.resetPanel.hidden) els.resetConfirmInput.focus();
+});
+els.resetCancelBtn.addEventListener('click', () => {
+  els.resetPanel.hidden = true;
+  els.resetConfirmInput.value = '';
+  els.lockError.hidden = true;
+});
+
+els.resetVaultConfirmBtn.addEventListener('click', async () => {
+  if ((els.resetConfirmInput.value || '').trim() !== '清空数据') {
+    return showLockError('请输入「清空数据」四个字，或点「取消」退出');
+  }
+  els.lockError.hidden = true;
+  els.resetVaultConfirmBtn.disabled = true;
   try {
     if (!sessionToken) {
-      // 未登录时先验证账户口令再清库，避免任意访客删数据
+      // 未登录时先验证账户密码再清库，避免任意访客删数据
       const username = (els.usernameInput.value || '').trim() || DEFAULT_USERNAME;
-      const passphrase = els.passphraseInput.value;
-      if (!passphrase) return showLockError('请先输入账户与登录口令');
-      const session = await loginAccount(username, passphrase);
-      if (!session) return showLockError('账户或口令不正确');
+      const password = els.passphraseInput.value;
+      if (!password) return showLockError('请先在上方输入账户名和密码');
+      const session = await loginAccount(username, password);
+      if (!session) return showLockError('账户或密码不正确');
     }
     const resp = await fetch('/api/vault', {
       method: 'DELETE', headers: authHeaders(),
@@ -1633,12 +1653,14 @@ els.resetVaultBtn.addEventListener('click', async () => {
       }
     } catch (error) { /* 本机缓存清理失败不影响服务端已清空 */ }
     showLockScreen('init');
-    showLockError('加密库已清空。重新登录后将创建全新的空加密库。');
+    showLockError('全部便签与加密库已删除。账户名和密码不变，重新登录将创建新的空加密库。');
     renderList();
     renderEditor();
   } catch (error) {
     console.warn('[NasNotes] reset vault failed', error);
     showLockError('清空失败：' + (error && error.message ? error.message : '未知错误'));
+  } finally {
+    els.resetVaultConfirmBtn.disabled = false;
   }
 });
 

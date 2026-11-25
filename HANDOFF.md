@@ -42,6 +42,7 @@ python tools/test_auth_api.py          # 账户/会话/改密/限速/穿越 37 �
 node tools/test_cryptofb.js            # crypto 兜底层字节级互操作 49 项
 node tools/test_legacy_migration.js    # 旧库→wkey 包裹 端到端迁移 16 项
 node tools/test_md_table_fs.js         # Markdown 表格/字号渲染 22 项
+node tools/test_login_ui.js            # 登录页隐藏字段/清库警示 7 项
 ```
 
 再测登录（账户名+密码）、`/api/meta` 初始化、便签密文写入读回、设置里改名改密、锁定/解锁后搜索。详细文档见 `README.md` 与 `SECURITY.md`。

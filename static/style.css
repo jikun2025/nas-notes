@@ -523,6 +523,14 @@ dialog select {
   outline: none;
 }
 .lock-card input:focus { border-color: var(--primary); }
+/* 作者样式里的 display:block 会盖掉 UA 的 [hidden]，必须显式失效 */
+.lock-card [hidden] { display: none !important; }
+.reset-panel {
+  margin-top: 16px; padding: 12px; border: 1px solid var(--danger);
+  border-radius: 8px; background: #fff6f6;
+}
+.reset-warning { color: var(--danger); font-size: 12px; line-height: 1.5; margin: 0 0 10px; }
+.reset-panel input { margin-bottom: 8px; }
 .lock-error { color: var(--danger); font-size: 13px; margin: 12px 0 0; }
 button.block { display: block; width: 100%; margin-top: 18px; padding: 10px; }
 .tiny { font-size: 11px; margin-top: 16px; }
