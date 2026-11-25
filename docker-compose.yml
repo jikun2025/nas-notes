@@ -1,0 +1,23 @@
+services:
+  nas-notes:
+    build: .
+    image: nas-notes:local
+    container_name: nas-notes
+    restart: unless-stopped
+    ports:
+      # 仅给反向代理使用；手机端 PWA 离线需要 HTTPS，请配合反代域名访问
+      - "8080:8080"
+    environment:
+      PORT: "8080"
+      DATA_DIR: "/data"
+      # 建议生成随机字符串，例如：openssl rand -hex 24
+      # 页面「设置」里填写同一个令牌即可；此令牌只保护 API，不用于加密便签内容
+      NOTES_TOKEN: "${NOTES_TOKEN:-change-me}"
+      TZ: "Asia/Shanghai"
+    volumes:
+      - ./data:/data
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8080/api/health', timeout=2)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3

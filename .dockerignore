@@ -1,0 +1,11 @@
+.git
+.gitignore
+data
+*.db
+*.db-wal
+*.db-shm
+.env
+__pycache__
+*.py[cod]
+README.md
+SECURITY.md
