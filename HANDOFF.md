@@ -43,7 +43,7 @@ node tools/test_cryptofb.js            # crypto 兜底层字节级互操作 49 �
 node tools/test_legacy_migration.js    # 旧库→wkey 包裹 端到端迁移 16 项
 node tools/test_md_table_fs.js         # Markdown 表格/字号渲染 22 项
 node tools/test_login_ui.js            # 登录页隐藏字段/清库警示 7 项
-node tools/test_ui_overhaul.js         # 两级设置/右键菜单/字号/表格 7 项
+node tools/test_ui_overhaul.js         # 三区布局/分栏预览/两级设置/右键菜单/字号/表格 10 项
 ```
 
-再测登录（账户名+密码）、`/api/meta` 初始化、便签密文写入读回、设置里改名改密、锁定/解锁后搜索；UI 改动另需浏览器实测：两级设置切换、右键/长按菜单改分类与删除、字号即时生效、表格弹窗插入。详细文档见 `README.md` 与 `SECURITY.md`。
+再测登录（账户名+密码）、`/api/meta` 初始化、便签密文写入读回、设置里改名改密、锁定/解锁后搜索；UI 改动另需浏览器实测：三区布局与分类筛选、编辑/分栏/预览三种视图切换、分栏下输入实时渲染与滚动联动、两级设置切换、右键/长按菜单改分类与删除、字号即时生效、表格弹窗插入。详细文档见 `README.md` 与 `SECURITY.md`。

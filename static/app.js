@@ -57,6 +57,8 @@ const els = {
   resetVaultConfirmBtn: document.getElementById('resetVaultConfirmBtn'),
   resetCancelBtn: document.getElementById('resetCancelBtn'),
   syncBadge: document.getElementById('syncBadge'),
+  folderRail: document.getElementById('folderRail'),
+  folderFilter: document.getElementById('folderFilter'),
   newBtn: document.getElementById('newBtn'),
   searchInput: document.getElementById('searchInput'),
   searchCount: document.getElementById('searchCount'),
@@ -70,6 +72,7 @@ const els = {
   settingsClose: document.getElementById('settingsClose'),
   themeSelect: document.getElementById('themeSelect'),
   editorFontSelect: document.getElementById('editorFontSelect'),
+  defaultViewSelect: document.getElementById('defaultViewSelect'),
   acctNameInput: document.getElementById('acctNameInput'),
   acctCurrentInput: document.getElementById('acctCurrentInput'),
   acctNewInput: document.getElementById('acctNewInput'),
@@ -92,7 +95,6 @@ const els = {
   titleInput: document.getElementById('titleInput'),
   bodyInput: document.getElementById('bodyInput'),
   mdToolbar: document.getElementById('mdToolbar'),
-  previewBtn: document.getElementById('previewBtn'),
   mdPreview: document.getElementById('mdPreview'),
   folderRow: document.querySelector('.folder-row'),
   folderSelect: document.getElementById('folderSelect'),
@@ -174,8 +176,39 @@ function applyEditorFont(value) {
   document.documentElement.style.setProperty('--editor-fs', EDITOR_FONT_PX[editorFont]);
   if (els.editorFontSelect) els.editorFontSelect.value = editorFont;
   els.mdToolbar.querySelectorAll('[data-md^="fs-"]').forEach((btn) => {
-    btn.classList.toggle('active', btn.dataset.md === 'fs-' + editorFont);
+    btn.classList.toggle('active', btn.dataset.md === 'fs-' + editorFont || (editorFont === 'normal' && btn.dataset.md === 'fs-normal'));
   });
+}
+
+// ---------- 编辑视图 ----------
+function applyViewMode(next, persist = true) {
+  viewMode = ['edit', 'split', 'view'].includes(next) ? next : 'split';
+  previewOn = viewMode === 'view';
+  document.body.classList.remove('view-edit', 'view-split', 'view-view');
+  document.body.classList.add('view-' + viewMode);
+  els.bodyInput.hidden = viewMode === 'view';
+  els.mdPreview.hidden = viewMode === 'edit';
+  document.querySelectorAll('[data-view]').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.view === viewMode);
+  });
+  if (viewMode !== 'edit') renderPreview();
+  if (persist) localStorage.setItem('nn-view-mode', viewMode);
+}
+
+function schedulePreview() {
+  if (viewMode === 'edit') return;
+  clearTimeout(previewTimer);
+  previewTimer = setTimeout(() => renderPreview(), 180);
+}
+
+function syncPaneScroll(from, to) {
+  if (syncingScroll) return;
+  const fromMax = from.scrollHeight - from.clientHeight;
+  const toMax = to.scrollHeight - to.clientHeight;
+  if (fromMax <= 0 || toMax <= 0) return;
+  syncingScroll = true;
+  to.scrollTop = (from.scrollTop / fromMax) * toMax;
+  requestAnimationFrame(() => { syncingScroll = false; });
 }
 
 // ---------- 工具 ----------
@@ -605,7 +638,12 @@ async function addAttachments(items) {
   toast(`已添加 ${added} 段录音（${formatBytes(totalBytes)}，已加密）`);
 }
 
-let previewOn = false;
+// 三种编辑视图（借鉴 Joplin 的 editor / split / viewer）：分栏为桌面默认。
+let viewMode = 'split';
+let previewOn = false;          // 兼容旧逻辑：仅预览模式为 true
+let previewTimer = null;
+let syncingScroll = false;
+let activeFolder = '';          // '' = 全部；UNGROUPED = 未分类；其余为分类名
 let savedCaretPos = -1;
 
 function currentCaret() {
@@ -614,9 +652,9 @@ function currentCaret() {
     ? ta.selectionStart : ta.value.length;
 }
 
-// 在光标处插入独立成行的图片占位符（预览态先切回编辑态）
+// 在光标处插入独立成行的图片占位符（仅预览态先切回编辑态）
 function insertImagePlaceholder(att, caret) {
-  if (previewOn) togglePreview(false);
+  if (viewMode === 'view') applyViewMode('edit');
   const ta = els.bodyInput;
   const value = ta.value;
   let pos = Math.min(Math.max(0, caret), value.length);
@@ -846,7 +884,7 @@ async function removeAttachment(id) {
       new RegExp('[ \\t]*!?\\[\\[att:' + id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\]\\][ \\t]*', 'gm'), '');
     els.bodyInput.value = cleaned;
     plain.body = cleaned;
-    if (previewOn) renderPreview();
+    if (viewMode !== 'edit') renderPreview();
   }
   renderAttachments();
   const note = notesCache.get(currentId);
@@ -1171,12 +1209,8 @@ async function lockApp() {
   document.body.classList.remove('show-editor');
   els.titleInput.value = '';
   els.bodyInput.value = '';
-  previewOn = false;
   els.mdPreview.innerHTML = '';
-  els.mdPreview.hidden = true;
-  els.bodyInput.hidden = false;
-  els.previewBtn.classList.remove('active');
-  els.previewBtn.textContent = '👁 预览';
+  applyViewMode('edit', false);
   els.attachmentList.innerHTML = '';
   els.attachCount.textContent = '';
   document.querySelectorAll('.image-lightbox').forEach((node) => node.remove());
@@ -1352,6 +1386,35 @@ function allFolders() {
   return Array.from(names).sort((a, b) => a.localeCompare(b, 'zh-CN'));
 }
 
+// 分类导航（三区布局的左栏）：分类计数来自内存明文，不访问服务端。
+function renderFolderRail() {
+  const counts = new Map();
+  let total = 0;
+  for (const note of notesCache.values()) {
+    if (note.deleted) continue;
+    total += 1;
+    const plain = plainCache.get(note.id);
+    const folder = (plain && typeof plain.folder === 'string' && plain.folder.trim().slice(0, 100))
+      || UNGROUPED;
+    counts.set(folder, (counts.get(folder) || 0) + 1);
+  }
+  const folders = allFolders();
+  const names = folders.concat(counts.has(UNGROUPED) ? [UNGROUPED] : []);
+  const rail = [{ key: '', label: '全部便签', count: total }].concat(
+    names.map((name) => ({ key: name, label: name, count: counts.get(name) || 0 }))
+  );
+  if (activeFolder && !names.includes(activeFolder)) activeFolder = '';
+  els.folderRail.innerHTML = rail.map((item) =>
+    '<button type="button" class="rail-item' + (item.key === activeFolder ? ' active' : '') +
+    '" data-folder="' + esc(item.key) + '"><span class="rail-name">' + esc(item.label) +
+    '</span><span class="rail-count">' + item.count + '</span></button>'
+  ).join('');
+  els.folderFilter.innerHTML = rail.map((item) =>
+    '<option value="' + esc(item.key) + '">' + esc(item.label) + '（' + item.count + '）</option>'
+  ).join('');
+  els.folderFilter.value = activeFolder;
+}
+
 function renderFolderOptions() {
   const plain = plainCache.get(currentId);
   const current = plain && typeof plain.folder === 'string' ? plain.folder.trim() : '';
@@ -1448,10 +1511,20 @@ async function setFolderForAll(from, to) {
   return touched;
 }
 
-function visibleNotes() {
-  const query = els.searchInput.value.trim().toLowerCase();
+function notesInActiveFolder() {
   return Array.from(notesCache.values())
     .filter((note) => !note.deleted)
+    .filter((note) => {
+      if (!activeFolder) return true;
+      const plain = plainCache.get(note.id);
+      const folder = (plain && typeof plain.folder === 'string' && plain.folder.trim().slice(0, 100)) || UNGROUPED;
+      return folder === activeFolder;
+    });
+}
+
+function visibleNotes() {
+  const query = els.searchInput.value.trim().toLowerCase();
+  return notesInActiveFolder()
     .map((note) => ({
       note,
       plain: plainCache.get(note.id) || { title: '（无法解密）', body: '', folder: '' }
@@ -1479,9 +1552,10 @@ function noteItemHTML(item, query) {
 }
 
 function renderList() {
+  renderFolderRail();
   const query = els.searchInput.value.trim().toLowerCase();
   const items = visibleNotes();
-  const total = Array.from(notesCache.values()).filter((note) => !note.deleted).length;
+  const total = notesInActiveFolder().length;
   els.searchCount.textContent = query ? `${items.length}/${total}` : `${total} 条`;
 
   if (items.length === 0) {
@@ -1520,9 +1594,12 @@ function renderList() {
 
 function updateEditorMeta() {
   const note = notesCache.get(currentId);
-  els.editorMeta.textContent = note
-    ? '更新于 ' + formatTime(note.updated_at) + ' · 已加密 · ' + (note.device || '未知设备')
-    : '未选择便签';
+  if (!note) { els.editorMeta.textContent = '未选择便签'; return; }
+  const plain = plainCache.get(currentId);
+  const chars = bodyText(plain || { body: '' }).length;
+  const device = String(note.device || '').slice(0, 8);
+  els.editorMeta.textContent = '已加密 · ' + chars + ' 字 · 更新 ' + formatTime(note.updated_at) +
+    (device ? ' · 设备 ' + device + '…' : '');
 }
 
 function renderPreview() {
@@ -1531,21 +1608,12 @@ function renderPreview() {
   els.mdPreview.innerHTML = NN_MD.render(plain.body || '', imageAttachmentsOf(plain));
 }
 
+// 兼容旧调用：布尔值映射到「仅预览 / 仅编辑」两个端点。
 function togglePreview(force) {
-  const next = typeof force === 'boolean' ? force : !previewOn;
-  if (next === previewOn) return;
-  if (!currentId) return;
-  previewOn = next;
-  if (previewOn) {
-    // 先把 textarea 里的当前编辑同步进内存，再渲染
-    const plain = plainCache.get(currentId);
-    if (plain) plain.body = els.bodyInput.value;
-    renderPreview();
-  }
-  els.mdPreview.hidden = !previewOn;
-  els.bodyInput.hidden = previewOn;
-  els.previewBtn.classList.toggle('active', previewOn);
-  els.previewBtn.textContent = previewOn ? '✎ 编辑' : '👁 预览';
+  const want = typeof force === 'boolean'
+    ? (force ? 'view' : 'edit')
+    : (viewMode === 'view' ? 'edit' : 'view');
+  applyViewMode(want);
 }
 
 function renderEditor() {
@@ -1556,14 +1624,14 @@ function renderEditor() {
     els.deleteBtn.hidden = true;
     els.attachCount.textContent = '';
     els.attachmentList.innerHTML = '';
-    if (previewOn) togglePreview(false);
+    els.mdPreview.innerHTML = '';
     if (els.folderRow) els.folderRow.hidden = true;
     if (els.mdToolbar) els.mdToolbar.hidden = true;
   } else {
     normalizePlain(plain);
     els.titleInput.value = plain.title || '';
     els.bodyInput.value = plain.body || '';
-    if (previewOn) renderPreview();
+    if (viewMode !== 'edit') renderPreview();
     els.deleteBtn.hidden = false;
     if (els.folderRow) els.folderRow.hidden = false;
     if (els.mdToolbar) els.mdToolbar.hidden = false;
@@ -1575,11 +1643,7 @@ function renderEditor() {
 
 function selectNote(id) {
   currentId = id;
-  previewOn = false;
-  els.mdPreview.hidden = true;
-  els.bodyInput.hidden = false;
-  els.previewBtn.classList.remove('active');
-  els.previewBtn.textContent = '👁 预览';
+  applyViewMode(viewMode, false);
   document.body.classList.add('show-editor');
   renderList();
   renderEditor();
@@ -2004,6 +2068,29 @@ els.folderDialogSelect.addEventListener('change', syncFolderDialogNew);
 els.searchInput.addEventListener('input', renderList);
 els.syncBtn.addEventListener('click', () => { clearTimeout(syncTimer); sync(); });
 
+// 分类筛选：左栏按钮（宽屏）与列表上方下拉（窄屏）共用同一状态。
+els.folderRail.addEventListener('click', (event) => {
+  const btn = event.target.closest('[data-folder]');
+  if (!btn) return;
+  activeFolder = btn.dataset.folder || '';
+  renderList();
+});
+els.folderFilter.addEventListener('change', () => {
+  activeFolder = els.folderFilter.value || '';
+  renderList();
+});
+
+// 视图切换：编辑 / 分栏 / 预览，位置固定在编辑器顶部，不会被工具栏挤没。
+document.querySelectorAll('[data-view]').forEach((btn) => {
+  btn.addEventListener('click', () => applyViewMode(btn.dataset.view));
+});
+els.bodyInput.addEventListener('scroll', () => {
+  if (viewMode === 'split') syncPaneScroll(els.bodyInput, els.mdPreview);
+});
+els.mdPreview.addEventListener('scroll', () => {
+  if (viewMode === 'split') syncPaneScroll(els.mdPreview, els.bodyInput);
+});
+
 els.imageBtn.addEventListener('click', () => {
   if (!currentPlain()) { toast('请先打开一条便签'); return; }
   savedCaretPos = currentCaret();
@@ -2119,7 +2206,7 @@ function tableOperate(op) {
 function handleMdAction(kind) {
   if (!currentId) { toast('请先打开一条便签'); return; }
   if (kind === 'preview') { togglePreview(); return; }
-  if (previewOn) togglePreview(false);
+  if (viewMode === 'view') applyViewMode('edit');
   if (kind === 'table') { insertTable(); return; }
   if (kind === 'fs-small' || kind === 'fs-large' || kind === 'fs-xlarge') {
     applyFontSize(kind.slice(3));
@@ -2275,10 +2362,12 @@ function handleEdit() {
   if (!Array.isArray(plain.attachments)) plain.attachments = [];
   plainCache.set(currentId, plain);
   setSaveState('编辑中…');
+  schedulePreview();
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
     const target = notesCache.get(currentId);
     if (target) queueUpsert(target);
+    renderList();   // 标题/分类改动及时反映到列表，不必等同步回来
   }, 450);
 }
 
@@ -2340,6 +2429,7 @@ els.settingsClose.addEventListener('click', () => els.settingsDialog.close());
 els.settingsBtn.addEventListener('click', async () => {
   applyTheme(theme);
   applyEditorFont(editorFont);
+  els.defaultViewSelect.value = localStorage.getItem('nn-default-view') || viewMode;
   showSettingsPanel('account');
   els.deviceInput.value = deviceId;
   els.syncMode.value = syncMode;
@@ -2372,6 +2462,10 @@ els.cancelSettings.addEventListener('click', () => els.settingsDialog.close());
 els.saveSettings.addEventListener('click', () => {
   applyTheme(els.themeSelect.value);
   applyEditorFont(els.editorFontSelect.value);
+  const nextDefaultView = ['edit', 'split', 'view'].includes(els.defaultViewSelect.value)
+    ? els.defaultViewSelect.value : 'split';
+  localStorage.setItem('nn-default-view', nextDefaultView);
+  applyViewMode(nextDefaultView);
   localStorage.setItem('nn-theme', theme);
   localStorage.setItem('nn-editor-font', editorFont);
   deviceId = els.deviceInput.value.trim() || genId();
@@ -2435,6 +2529,9 @@ els.importFile.addEventListener('change', () => {
   if (!AUDIO_PROFILES[audioQuality]) audioQuality = 'balanced';
   applyTheme(localStorage.getItem('nn-theme') || 'light');
   applyEditorFont(localStorage.getItem('nn-editor-font') || 'normal');
+  const storedView = localStorage.getItem('nn-view-mode');
+  const defaultView = localStorage.getItem('nn-default-view') || (window.innerWidth >= 760 ? 'split' : 'edit');
+  applyViewMode(['edit', 'split', 'view'].includes(storedView) ? storedView : defaultView, false);
   localStorage.setItem('nn-device', deviceId);
 
   try {

@@ -78,8 +78,39 @@ ok('便签列表支持右键与长按，菜单含删除/分类', () => {
   assert.match(app, /function deleteNoteById\(id\)/);
 });
 
-ok('Service Worker 缓存已升版到 v15', () => {
-  assert.match(sw, /const CACHE = 'nas-notes-v15'/);
+ok('三区布局：分类栏 + 便签列表 + 编辑预览区', () => {
+  assert.match(html, /<aside class="sidebar" id="sidebar">/);
+  assert.match(html, /id="folderRail" class="folder-rail"/);
+  assert.match(html, /<section class="note-pane" id="notePane">/);
+  assert.match(html, /id="noteList" class="note-list"/);
+  assert.match(html, /<main class="editor" id="editor">/);
+  assert.match(css, /\.writing-pane\s*\{[^}]*grid-template-columns[^}]*1fr[^}]*1fr/);
+  assert.match(app, /function renderFolderRail\(\)/);
+  assert.match(app, /function notesInActiveFolder\(\)/);
+});
+
+ok('视图切换固定在编辑器顶部，不再藏在横向工具栏里', () => {
+  const head = html.slice(html.indexOf('class="editor-head"'), html.indexOf('class="editor-scroll"'));
+  assert.match(head, /data-view="edit"/);
+  assert.match(head, /data-view="split"/);
+  assert.match(head, /data-view="view"/);
+  assert.doesNotMatch(head, /md-toolbar/);
+  const toolbar = html.slice(html.indexOf('id="mdToolbar"'), html.indexOf('class="writing-pane"'));
+  assert.doesNotMatch(toolbar, /data-view|预览/);
+  assert.match(app, /function applyViewMode\(next, persist = true\)/);
+  assert.match(app, /localStorage\.setItem\('nn-view-mode', viewMode\)/);
+});
+
+ok('分栏预览随输入实时更新，双栏滚动联动', () => {
+  assert.match(app, /function schedulePreview\(\)/);
+  assert.match(app, /schedulePreview\(\);/);
+  assert.match(app, /function syncPaneScroll\(from, to\)/);
+  assert.match(css, /body\.view-edit \.preview-pane/);
+  assert.match(css, /body\.view-view \.source-pane/);
+});
+
+ok('Service Worker 缓存已升版到 v16', () => {
+  assert.match(sw, /const CACHE = 'nas-notes-v16'/);
 });
 
 console.log('\nUI overhaul tests: ' + pass + ' pass');

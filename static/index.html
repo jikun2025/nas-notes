@@ -36,31 +36,49 @@
   </div>
 
   <div class="app">
+    <!-- 区域一：分类导航（借鉴 Joplin 的 notebook 侧栏） -->
     <aside class="sidebar" id="sidebar">
-      <header class="sidebar-head">
-        <div class="brand"><span class="brand-mark">签</span><span>轻签<small>加密便签</small></span><span id="syncBadge" class="badge">未解锁</span></div>
+      <div class="rail-brand">
+        <span class="brand-mark">签</span>
+        <span class="rail-brand-text">轻签<small>加密便签</small></span>
+      </div>
+      <div class="rail-label">分类</div>
+      <nav id="folderRail" class="folder-rail" aria-label="按分类筛选便签"></nav>
+      <footer class="rail-foot">
+        <button id="syncBtn" class="ghost" type="button" title="立即同步">↻</button>
+        <button id="lockBtn" class="ghost" type="button" title="锁定并清除内存明文">🔒</button>
+        <button id="settingsBtn" class="ghost" type="button" title="设置">⚙</button>
+      </footer>
+    </aside>
+
+    <!-- 区域二：便签列表 -->
+    <section class="note-pane" id="notePane">
+      <header class="note-pane-head">
+        <div class="note-pane-title"><h2>便签</h2><span id="syncBadge" class="badge">未解锁</span></div>
         <button id="newBtn" class="primary new-btn" type="button" title="新建便签">＋ 新建</button>
       </header>
-
       <div class="search-wrap">
         <span class="search-icon" aria-hidden="true">⌕</span>
         <input id="searchInput" type="search" placeholder="搜索标题、正文、分类…" autocomplete="off" spellcheck="false">
         <span class="hint" id="searchCount"></span>
       </div>
-
+      <div class="filter-row">
+        <label for="folderFilter">分类</label>
+        <select id="folderFilter" aria-label="按分类筛选"></select>
+      </div>
       <div id="noteList" class="note-list" aria-label="便签列表"></div>
+    </section>
 
-      <footer class="sidebar-foot">
-        <button id="syncBtn" class="ghost" type="button" title="立即同步">↻ 同步</button>
-        <button id="lockBtn" class="ghost" type="button" title="锁定并清除内存明文">🔒 锁定</button>
-        <button id="settingsBtn" class="ghost" type="button" title="设置">⚙ 设置</button>
-      </footer>
-    </aside>
-
+    <!-- 区域三：编辑器 / 预览 -->
     <main class="editor" id="editor">
       <div class="editor-head">
         <button id="backBtn" class="back" type="button" aria-label="返回列表">←</button>
         <div class="editor-meta" id="editorMeta">未选择便签</div>
+        <div class="view-switch" role="group" aria-label="编辑视图">
+          <button type="button" data-view="edit" title="仅编辑">✎ 编辑</button>
+          <button type="button" data-view="split" class="active" title="左侧编辑、右侧实时预览">▥ 分栏</button>
+          <button type="button" data-view="view" title="仅预览">👁 预览</button>
+        </div>
         <button id="deleteBtn" class="danger subtle" type="button" hidden>删除</button>
       </div>
       <div class="editor-scroll">
@@ -92,19 +110,25 @@
             <button type="button" class="md-btn" data-md="hr" title="分隔线 ---">―</button>
             <span class="md-sep"></span>
             <button type="button" class="md-btn md-fs" data-md="fs-small" title="编辑区小字体">A-</button>
-            <button type="button" class="md-btn md-fs active" data-md="fs-normal" title="编辑区标准字体">A</button>
+            <button type="button" class="md-btn md-fs" data-md="fs-normal" title="编辑区标准字体">A</button>
             <button type="button" class="md-btn md-fs" data-md="fs-large" title="编辑区大字体">A+</button>
             <span class="md-sep"></span>
             <button type="button" class="md-btn" data-md="table" title="插入表格（弹窗选行列）">▦ 表格</button>
-            <button type="button" class="md-btn" data-md="row-add" title="光标在表格内：末尾加一行">＋行</button>
-            <button type="button" class="md-btn" data-md="row-del" title="光标在表格内：删除光标所在行">－行</button>
-            <button type="button" class="md-btn" data-md="col-add" title="光标在表格内：右侧加一列">＋列</button>
-            <button type="button" class="md-btn" data-md="col-del" title="光标在表格内：删除光标所在列">－列</button>
-            <span class="md-spacer"></span>
-            <button type="button" class="md-btn md-preview-toggle" id="previewBtn" data-md="preview" title="预览 Markdown 渲染效果">👁 预览</button>
+            <button type="button" class="md-btn" data-md="row-add" title="表格末尾加一行">＋行</button>
+            <button type="button" class="md-btn" data-md="row-del" title="删除光标所在行">－行</button>
+            <button type="button" class="md-btn" data-md="col-add" title="光标右侧加一列">＋列</button>
+            <button type="button" class="md-btn" data-md="col-del" title="删除光标所在列">－列</button>
           </div>
-          <textarea id="bodyInput" class="body-input" rows="8" aria-label="正文（Markdown）" placeholder="开始写点什么…（支持 Markdown）" spellcheck="false"></textarea>
-          <div id="mdPreview" class="md-preview" hidden></div>
+          <div class="writing-pane" id="writingPane">
+            <section class="source-pane">
+              <div class="pane-label">Markdown 源码</div>
+              <textarea id="bodyInput" class="body-input" rows="8" aria-label="正文（Markdown）" placeholder="开始写点什么…（支持 Markdown）" spellcheck="false"></textarea>
+            </section>
+            <section class="preview-pane">
+              <div class="pane-label">效果预览 <span class="pane-hint">随输入实时更新</span></div>
+              <div id="mdPreview" class="md-preview"></div>
+            </section>
+          </div>
           <div class="attachment-bar">
             <button id="imageBtn" class="ghost small" type="button" title="图片作为附件插入正文光标位置（自动压缩加密）">🖼 插入图片</button>
             <button id="recordBtn" class="ghost small" type="button" title="录制语音">🎤 <span id="recordLabel">录音</span></button>
@@ -174,6 +198,12 @@
               <option value="normal">标准</option>
               <option value="large">大</option>
               <option value="xlarge">特大</option>
+            </select>
+            <label for="defaultViewSelect">默认编辑视图</label>
+            <select id="defaultViewSelect">
+              <option value="split">分栏（编辑 + 实时预览）</option>
+              <option value="edit">仅编辑</option>
+              <option value="view">仅预览</option>
             </select>
             <label for="imageQuality">图片压缩强度</label>
             <select id="imageQuality">
