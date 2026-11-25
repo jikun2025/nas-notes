@@ -35,7 +35,7 @@ PORT=18767 DATA_DIR=/tmp/nas-notes-local STATIC_DIR="$PWD/static" python server.
 
 ```bash
 python -m py_compile server.py
-node --check static/app.js && node --check static/sw.js && node --check static/cryptofb.js
+node --check static/app.js && node --check static/sw.js && node --check static/cryptofb.js && node --check static/md.js && node --check static/html2md.js
 curl -s http://127.0.0.1:18767/api/health
 
 python tools/test_auth_api.py          # 账户/会话/改密/限速/穿越 37 项
@@ -44,6 +44,7 @@ node tools/test_legacy_migration.js    # 旧库→wkey 包裹 端到端迁移 16
 node tools/test_md_table_fs.js         # Markdown 表格/字号渲染 22 项
 node tools/test_login_ui.js            # 登录页隐藏字段/清库警示 7 项
 node tools/test_ui_overhaul.js         # 三区布局/分栏预览/两级设置/右键菜单/字号/表格 10 项
+node tools/test_rich_editor.js         # 富文本模式 + HTML→Markdown 往返 11 项（真实浏览器）
 ```
 
-再测登录（账户名+密码）、`/api/meta` 初始化、便签密文写入读回、设置里改名改密、锁定/解锁后搜索；UI 改动另需浏览器实测：三区布局与分类筛选、编辑/分栏/预览三种视图切换、分栏下输入实时渲染与滚动联动、两级设置切换、右键/长按菜单改分类与删除、字号即时生效、表格一键插入与增删行列。详细文档见 `README.md` 与 `SECURITY.md`。
+再测登录（账户名+密码）、`/api/meta` 初始化、便签密文写入读回、设置里改名改密、锁定/解锁后搜索；UI 改动另需浏览器实测：三区布局与分类筛选、富文本/源码/分栏/预览四种视图切换、富文本下工具栏加粗/标题/列表/表格是否直接生效且源码视图同步出现 `**` `#`、两级设置切换、右键/长按菜单改分类与删除、字号即时生效、表格一键插入与增删行列。详细文档见 `README.md` 与 `SECURITY.md`。

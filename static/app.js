@@ -94,6 +94,8 @@ const els = {
   editorMeta: document.getElementById('editorMeta'),
   titleInput: document.getElementById('titleInput'),
   bodyInput: document.getElementById('bodyInput'),
+  richPane: document.getElementById('richPane'),
+  richEditor: document.getElementById('richEditor'),
   mdToolbar: document.getElementById('mdToolbar'),
   mdPreview: document.getElementById('mdPreview'),
   folderRow: document.querySelector('.folder-row'),
@@ -176,22 +178,53 @@ function applyEditorFont(value) {
 }
 
 // ---------- 编辑视图 ----------
+// 四种视图，对标 Joplin 的 editor / viewer / split 加上移动端的富文本模式：
+//   rich   富文本：直接编辑渲染后的 DOM，看不到 Markdown 符号（默认）
+//   source 纯 Markdown 源码
+//   split  源码 + 实时预览
+//   view   只读预览
+const VIEW_MODES = ['rich', 'source', 'split', 'view'];
+
+function isRichMode() { return viewMode === 'rich'; }
+function isSourceMode() { return viewMode === 'source' || viewMode === 'split'; }
+
 function applyViewMode(next, persist = true) {
-  viewMode = ['edit', 'split', 'view'].includes(next) ? next : 'split';
+  const wasRich = viewMode === 'rich';
+  const target = VIEW_MODES.includes(next) ? next : 'rich';
+  // 必须在改 viewMode 之前落盘：flushRich 内部有「当前不是富文本就直接返回」的保护
+  if (wasRich && target !== 'rich') flushRich();
+  viewMode = target;
   previewOn = viewMode === 'view';
-  document.body.classList.remove('view-edit', 'view-split', 'view-view');
+  document.body.classList.remove('view-rich', 'view-source', 'view-split', 'view-view');
   document.body.classList.add('view-' + viewMode);
-  els.bodyInput.hidden = viewMode === 'view';
-  els.mdPreview.hidden = viewMode === 'edit';
   document.querySelectorAll('[data-view]').forEach((btn) => {
     btn.classList.toggle('active', btn.dataset.view === viewMode);
   });
-  if (viewMode !== 'edit') renderPreview();
+  if (viewMode !== 'rich') clearRichToolbarState();
+  if (viewMode === 'rich') renderRich();
+  if (viewMode === 'source') autoGrowBody();
+  if (viewMode === 'split' || viewMode === 'view') renderPreview();
   if (persist) localStorage.setItem('nn-view-mode', viewMode);
 }
 
+// 源码单栏时让 textarea 随内容增高，整个页面统一滚动（不再"盒子里套盒子"）
+function autoGrowBody() {
+  const ta = els.bodyInput;
+  if (!ta || viewMode !== 'source') return;
+  ta.style.height = 'auto';
+  const next = Math.max(320, ta.scrollHeight + 2);
+  ta.style.height = next + 'px';
+}
+
+function clearRichToolbarState() {
+  if (!els.mdToolbar) return;
+  els.mdToolbar.querySelectorAll('.md-btn.active').forEach((btn) => {
+    if (String(btn.dataset.md || '').indexOf('fs-') !== 0) btn.classList.remove('active');
+  });
+}
+
 function schedulePreview() {
-  if (viewMode === 'edit') return;
+  if (viewMode !== 'split' && viewMode !== 'view') return;
   clearTimeout(previewTimer);
   previewTimer = setTimeout(() => renderPreview(), 180);
 }
@@ -647,9 +680,14 @@ function currentCaret() {
     ? ta.selectionStart : ta.value.length;
 }
 
-// 在光标处插入独立成行的图片占位符（仅预览态先切回编辑态）
+// 在光标处插入独立成行的图片占位符（仅预览态先切回可编辑态）
 function insertImagePlaceholder(att, caret) {
-  if (viewMode === 'view') applyViewMode('edit');
+  if (isRichMode()) {
+    // 富文本：直接插入渲染好的图片块（保存时序列化回 ![[att:id]]）
+    richInsertBlock(NN_MD.figureHTML(att) + '<p><br></p>');
+    return;
+  }
+  if (viewMode === 'view') applyViewMode('source');
   const ta = els.bodyInput;
   const value = ta.value;
   let pos = Math.min(Math.max(0, caret), value.length);
@@ -879,7 +917,8 @@ async function removeAttachment(id) {
       new RegExp('[ \\t]*!?\\[\\[att:' + id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\]\\][ \\t]*', 'gm'), '');
     els.bodyInput.value = cleaned;
     plain.body = cleaned;
-    if (viewMode !== 'edit') renderPreview();
+    if (viewMode === 'rich') renderRich();
+    if (viewMode === 'split' || viewMode === 'view') renderPreview();
   }
   renderAttachments();
   const note = notesCache.get(currentId);
@@ -1205,7 +1244,8 @@ async function lockApp() {
   els.titleInput.value = '';
   els.bodyInput.value = '';
   els.mdPreview.innerHTML = '';
-  applyViewMode('edit', false);
+  if (els.richEditor) els.richEditor.innerHTML = '';
+  applyViewMode('rich', false);
   els.attachmentList.innerHTML = '';
   els.attachCount.textContent = '';
   document.querySelectorAll('.image-lightbox').forEach((node) => node.remove());
@@ -1649,11 +1689,68 @@ function renderPreview() {
   els.mdPreview.innerHTML = NN_MD.render(plain.body || '', imageAttachmentsOf(plain));
 }
 
-// 兼容旧调用：布尔值映射到「仅预览 / 仅编辑」两个端点。
+// ---------- 富文本编辑（对标 Joplin 移动端「富文本」模式） ----------
+// 编辑区直接承载渲染后的 DOM：textContent 就是排版后的文字，看不到 ** # | 这些符号。
+// 保存时由 html2md.js 序列化回 Markdown，磁盘/云端仍然只有一份 Markdown 源码。
+let richDirty = false;      // DOM 有未序列化的改动
+let richCachedMd = '';      // 序列化缓存，避免每次按键都整篇遍历 DOM
+
+function renderRich() {
+  if (!els.richEditor) return;
+  const plain = plainCache.get(currentId);
+  els.richEditor.innerHTML = plain
+    ? NN_MD.render(plain.body || '', imageAttachmentsOf(plain))
+    : '';
+  // md.js 渲染的复选框是 disabled（预览态），编辑态要能点
+  els.richEditor.querySelectorAll('input[type="checkbox"]').forEach((box) => {
+    box.removeAttribute('disabled');
+  });
+  richCachedMd = plain ? (plain.body || '') : '';
+  richDirty = false;
+  updateRichPlaceholder();
+}
+
+function updateRichPlaceholder() {
+  if (!els.richEditor) return;
+  const hasContent = Boolean(els.richEditor.querySelector('img,table,figure,pre,blockquote,hr')) ||
+    els.richEditor.textContent.trim() !== '';
+  els.richEditor.classList.toggle('is-empty', !hasContent);
+}
+
+function richMarkdown() {
+  if (!richDirty) return richCachedMd;
+  try {
+    richCachedMd = NN_HTML2MD.fromNode(els.richEditor);
+  } catch (error) {
+    console.warn('[NasNotes] html2md failed', error);
+    richCachedMd = els.bodyInput.value;
+  }
+  richDirty = false;
+  return richCachedMd;
+}
+
+// 富文本内容 → Markdown → 走正常加密保存
+function flushRich() {
+  if (viewMode !== 'rich' || !currentId) return;
+  const plain = plainCache.get(currentId);
+  if (!plain) return;
+  const md = richMarkdown();
+  els.bodyInput.value = md;   // 切到源码视图时直接看到最新内容，不受下面的早退影响
+  if (md === plain.body) return;
+  plain.body = md;
+  handleEdit();
+}
+
+// 统一取正文源码：富文本从 DOM 序列化，源码模式取 textarea
+function currentBodyMd() {
+  return viewMode === 'rich' ? richMarkdown() : els.bodyInput.value;
+}
+
+// 兼容旧调用：布尔值映射到「仅预览 / 源码」两个端点。
 function togglePreview(force) {
   const want = typeof force === 'boolean'
-    ? (force ? 'view' : 'edit')
-    : (viewMode === 'view' ? 'edit' : 'view');
+    ? (force ? 'view' : 'source')
+    : (viewMode === 'view' ? 'source' : 'view');
   applyViewMode(want);
 }
 
@@ -1666,13 +1763,15 @@ function renderEditor() {
     els.attachCount.textContent = '';
     els.attachmentList.innerHTML = '';
     els.mdPreview.innerHTML = '';
+    if (els.richEditor) els.richEditor.innerHTML = '';
     if (els.folderRow) els.folderRow.hidden = true;
     if (els.mdToolbar) els.mdToolbar.hidden = true;
   } else {
     normalizePlain(plain);
     els.titleInput.value = plain.title || '';
     els.bodyInput.value = plain.body || '';
-    if (viewMode !== 'edit') renderPreview();
+    if (viewMode === 'rich') renderRich();
+    if (viewMode === 'split' || viewMode === 'view') renderPreview();
     els.deleteBtn.hidden = false;
     if (els.folderRow) els.folderRow.hidden = false;
     if (els.mdToolbar) els.mdToolbar.hidden = false;
@@ -2134,7 +2233,12 @@ els.mdPreview.addEventListener('scroll', () => {
 
 els.imageBtn.addEventListener('click', () => {
   if (!currentPlain()) { toast('请先打开一条便签'); return; }
-  savedCaretPos = currentCaret();
+  if (isRichMode()) {
+    rememberRichRange();
+    savedCaretPos = -1;
+  } else {
+    savedCaretPos = currentCaret();
+  }
   els.imageInput.click();
 });
 els.imageInput.addEventListener('change', handleImageInput);
@@ -2145,6 +2249,306 @@ els.mdPreview.addEventListener('click', (event) => {
   const img = event.target.closest('img[data-preview-image]');
   if (img) openLightbox(img.src);
 });
+
+// ---------- 富文本编辑操作 ----------
+// 全部直接操作 contenteditable 的 DOM：点「B」就是真加粗，正文里不会出现 **。
+// 写入 body 的时机交给 richChanged()（序列化 → 加密保存）。
+let savedRichRange = null;
+
+function richClosest(node, tag) {
+  let el = node && node.nodeType === 1 ? node : (node && node.parentNode);
+  while (el && el !== els.richEditor) {
+    if (el.nodeType === 1 && el.tagName.toLowerCase() === tag) return el;
+    el = el.parentNode;
+  }
+  return null;
+}
+
+function richBlockTag() {
+  const sel = window.getSelection();
+  let el = sel && sel.anchorNode;
+  if (el && el.nodeType !== 1) el = el.parentNode;
+  while (el && el !== els.richEditor) {
+    if (el.nodeType === 1 && /^(h[1-6]|p|div|blockquote|li|pre)$/.test(el.tagName.toLowerCase())) {
+      return el.tagName.toLowerCase();
+    }
+    el = el.parentNode;
+  }
+  return '';
+}
+
+function rememberRichRange() {
+  if (!isRichMode() || !els.richEditor) return;
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount) return;
+  const range = sel.getRangeAt(0);
+  if (els.richEditor.contains(range.commonAncestorContainer)) savedRichRange = range.cloneRange();
+}
+
+function restoreRichRange() {
+  if (!savedRichRange) return;
+  const sel = window.getSelection();
+  try {
+    sel.removeAllRanges();
+    sel.addRange(savedRichRange);
+  } catch (error) { /* 节点已被删除时忽略 */ }
+}
+
+function richFocus() {
+  if (!els.richEditor) return;
+  const sel = window.getSelection();
+  const inside = Boolean(sel && sel.rangeCount && els.richEditor.contains(sel.anchorNode));
+  try { els.richEditor.focus({ preventScroll: true }); } catch (error) { els.richEditor.focus(); }
+  if (!inside) restoreRichRange();
+}
+
+function richChanged() {
+  richDirty = true;
+  updateRichPlaceholder();
+  handleEdit();
+}
+
+function richInsertHtml(html) {
+  richFocus();
+  const sel = window.getSelection();
+  let done = false;
+  if (sel && sel.rangeCount && els.richEditor.contains(sel.anchorNode)) {
+    try { done = document.execCommand('insertHTML', false, html); } catch (error) { done = false; }
+    if (!done) {
+      const range = sel.getRangeAt(0);
+      range.deleteContents();
+      const holder = document.createElement('div');
+      holder.innerHTML = html;
+      const frag = document.createDocumentFragment();
+      while (holder.firstChild) frag.appendChild(holder.firstChild);
+      range.insertNode(frag);
+      done = true;
+    }
+  }
+  if (!done) {
+    els.richEditor.insertAdjacentHTML('beforeend', html);
+  }
+  richDirty = true;
+  updateRichPlaceholder();
+}
+
+// 块级元素（表格 / 图片 / 分隔线）插到当前顶层块的后面，
+// 否则光标在列表项里时会把 <table> 塞进 <li>，结构非法、序列化也会丢内容。
+function richInsertBlock(html) {
+  richFocus();
+  const sel = window.getSelection();
+  const node = sel && sel.anchorNode;
+  if (!node || !els.richEditor.contains(node)) {
+    els.richEditor.insertAdjacentHTML('beforeend', html);
+    richChanged();
+    return;
+  }
+  let top = node;
+  while (top && top.parentNode && top.parentNode !== els.richEditor) top = top.parentNode;
+  if (!top || top === els.richEditor) els.richEditor.insertAdjacentHTML('beforeend', html);
+  else top.insertAdjacentHTML('afterend', html);
+  richChanged();
+}
+
+function richExec(command, value) {
+  richFocus();
+  let ok = false;
+  try { ok = document.execCommand(command, false, value == null ? null : value); } catch (error) { ok = false; }
+  if (ok) richChanged();
+  return ok;
+}
+
+function richFormatBlock(tag) {
+  richFocus();
+  try { document.execCommand('formatBlock', false, tag); } catch (error) {
+    try { document.execCommand('formatBlock', false, '<' + tag + '>'); } catch (error2) { /* ignore */ }
+  }
+  richChanged();
+}
+
+function richHeading(level) {
+  const tag = 'h' + level;
+  richFormatBlock(richBlockTag() === tag ? 'p' : tag);
+}
+
+function richInlineCode() {
+  const sel = window.getSelection();
+  if (!sel || !sel.rangeCount) return;
+  const existing = richClosest(sel.anchorNode, 'code');
+  if (existing) {
+    // 再点一次取消：把 code 拆掉，文本留在原位
+    const parent = existing.parentNode;
+    while (existing.firstChild) parent.insertBefore(existing.firstChild, existing);
+    parent.removeChild(existing);
+    richChanged();
+    return;
+  }
+  const range = sel.getRangeAt(0);
+  const code = document.createElement('code');
+  if (range.collapsed) code.textContent = 'code';
+  else code.appendChild(range.extractContents());
+  range.insertNode(code);
+  const next = document.createRange();
+  next.selectNodeContents(code);
+  sel.removeAllRanges();
+  sel.addRange(next);
+  savedRichRange = next.cloneRange();
+  richChanged();
+}
+
+async function richLink() {
+  rememberRichRange();
+  const url = await askText('插入链接', 'https://', '链接地址');
+  if (!url) return;
+  if (!/^(https?:\/\/|mailto:)/i.test(url)) { toast('只支持 http/https/mailto 链接'); return; }
+  richFocus();
+  const sel = window.getSelection();
+  if (sel && sel.rangeCount && !sel.isCollapsed) {
+    try { document.execCommand('createLink', false, url); } catch (error) { /* ignore */ }
+    richChanged();
+  } else {
+    richInsertHtml('<a href="' + NN_MD.esc(url) + '" target="_blank" rel="noopener noreferrer">' +
+      NN_MD.esc(url) + '</a>');
+    richChanged();
+  }
+}
+
+function richTask() {
+  richFocus();
+  try { document.execCommand('insertUnorderedList'); } catch (error) { /* ignore */ }
+  const sel = window.getSelection();
+  const li = richClosest(sel && sel.anchorNode, 'li');
+  if (li && !li.querySelector('input[type="checkbox"]')) {
+    li.classList.add('md-task');
+    const box = document.createElement('input');
+    box.type = 'checkbox';
+    li.insertBefore(box, li.firstChild);
+    li.insertBefore(document.createTextNode(' '), box.nextSibling);
+  }
+  richChanged();
+}
+
+// 富文本里的表格：直接插入渲染好的 table，行列操作改 DOM
+function insertTableRich(cols = 3, rows = 2) {
+  const n = Math.max(1, Math.min(20, Number(cols) || 3));
+  const m = Math.max(0, Math.min(50, Number(rows) || 0));
+  richInsertBlock(NN_MD.render(NN_MD.insertTableMarkdown(m, n), []) + '<p><br></p>');
+  toast('已插入 ' + n + ' 列 × ' + m + ' 行表格：用 ＋行/－行/＋列/－列 调整');
+}
+
+function richTableOp(op) {
+  const sel = window.getSelection();
+  const cell = richClosest(sel && sel.anchorNode, 'td') || richClosest(sel && sel.anchorNode, 'th');
+  if (!cell) { toast('请先把光标放到表格单元格里'); return; }
+  const row = cell.parentNode;
+  const table = richClosest(cell, 'table');
+  if (!row || !table) return;
+  const body = table.tBodies[0] || table;
+  const index = Array.prototype.indexOf.call(row.children, cell);
+  if (op === 'row-add') {
+    const tr = document.createElement('tr');
+    Array.prototype.forEach.call(row.children, function () {
+      const td = document.createElement('td');
+      td.innerHTML = '<br>';
+      tr.appendChild(td);
+    });
+    if (row.parentNode === table.tHead) body.appendChild(tr);
+    else row.parentNode.insertBefore(tr, row.nextSibling);
+  } else if (op === 'row-del') {
+    if (row.parentNode === table.tHead) {
+      // 删表头没意义：改删第一行数据
+      const first = body.rows[0];
+      if (first) body.removeChild(first); else table.parentNode.removeChild(table);
+    } else {
+      row.parentNode.removeChild(row);
+    }
+  } else if (op === 'col-add') {
+    Array.prototype.forEach.call(table.rows, function (tr) {
+      const ref = tr.children[index];
+      const cellTag = tr.parentNode === table.tHead ? 'th' : 'td';
+      const created = document.createElement(cellTag);
+      created.innerHTML = '<br>';
+      if (ref && ref.nextSibling) tr.insertBefore(created, ref.nextSibling);
+      else tr.appendChild(created);
+    });
+  } else if (op === 'col-del') {
+    const width = (table.rows[0] && table.rows[0].children.length) || 0;
+    if (width <= 1) { table.parentNode.removeChild(table); }
+    else {
+      Array.prototype.forEach.call(table.rows, function (tr) {
+        if (tr.children[index]) tr.removeChild(tr.children[index]);
+      });
+    }
+  } else {
+    return;
+  }
+  if (table.rows.length === 0 || (table.rows[0] && table.rows[0].children.length === 0)) {
+    if (table.parentNode) table.parentNode.removeChild(table);
+  }
+  richChanged();
+  const labels = { 'row-add': '已加一行', 'row-del': '已删一行', 'col-add': '已加一列', 'col-del': '已删一列' };
+  toast(labels[op] || '表格已更新');
+}
+
+function handleRichAction(kind) {
+  switch (kind) {
+    case 'bold': richExec('bold'); break;
+    case 'italic': richExec('italic'); break;
+    case 'strike': richExec('strikeThrough'); break;
+    case 'h1': richHeading(1); break;
+    case 'h2': richHeading(2); break;
+    case 'h3': richHeading(3); break;
+    case 'ul': richExec('insertUnorderedList'); break;
+    case 'ol': richExec('insertOrderedList'); break;
+    case 'task': richTask(); break;
+    case 'link': richLink(); break;
+    case 'quote': richFormatBlock(richBlockTag() === 'blockquote' ? 'p' : 'blockquote'); break;
+    case 'code': richInlineCode(); break;
+    case 'hr': richInsertBlock('<hr>'); break;
+    case 'table': insertTableRich(); break;
+    case 'row-add': case 'row-del': case 'col-add': case 'col-del': richTableOp(kind); break;
+    default: break;
+  }
+}
+
+// 工具栏状态回显：光标在加粗/标题/列表里时按钮高亮（和 Joplin 一致）
+let richToolbarTimer = null;
+function scheduleRichToolbarState() {
+  if (!isRichMode()) return;
+  clearTimeout(richToolbarTimer);
+  richToolbarTimer = setTimeout(updateRichToolbarState, 60);
+}
+
+function updateRichToolbarState() {
+  if (!isRichMode() || !els.mdToolbar) return;
+  const commands = { bold: 'bold', italic: 'italic', strike: 'strikeThrough', ul: 'insertUnorderedList', ol: 'insertOrderedList' };
+  Object.keys(commands).forEach((kind) => {
+    const btn = els.mdToolbar.querySelector('[data-md="' + kind + '"]');
+    if (!btn) return;
+    let on = false;
+    try { on = document.queryCommandState(commands[kind]); } catch (error) { on = false; }
+    btn.classList.toggle('active', on);
+  });
+  const tag = richBlockTag();
+  ['h1', 'h2', 'h3', 'quote'].forEach((kind) => {
+    const btn = els.mdToolbar.querySelector('[data-md="' + kind + '"]');
+    if (!btn) return;
+    btn.classList.toggle('active', tag === (kind === 'quote' ? 'blockquote' : kind));
+  });
+  const codeBtn = els.mdToolbar.querySelector('[data-md="code"]');
+  if (codeBtn) {
+    const sel = window.getSelection();
+    codeBtn.classList.toggle('active', Boolean(richClosest(sel && sel.anchorNode, 'code')));
+  }
+}
+
+function richKeydown(event) {
+  if (!(event.ctrlKey || event.metaKey)) return;
+  const key = event.key.toLowerCase();
+  if (key === 'b') { event.preventDefault(); handleRichAction('bold'); }
+  else if (key === 'i') { event.preventDefault(); handleRichAction('italic'); }
+  else if (key === 'k') { event.preventDefault(); handleRichAction('link'); }
+}
 
 // ---------- Markdown 工具栏 ----------
 function applyAround(prefix, suffix, placeholder) {
@@ -2200,8 +2604,9 @@ function applyFontSize(size) {
 // （旧版依赖 <dialog>，在部分安卓 WebView 上 showModal 不可用，点了毫无反应。）
 // 需要更多行列时，用工具栏的「＋行 / －行 / ＋列 / －列」调整。
 function insertTable(cols = 3, rows = 2) {
+  if (isRichMode()) { insertTableRich(cols, rows); return; }
   const ta = els.bodyInput;
-  if (!ta || ta.hidden) { toast('请先打开一条便签'); return; }
+  if (!ta || !isSourceMode()) { toast('请先打开一条便签'); return; }
   if (typeof NN_MD === 'undefined' || typeof NN_MD.insertTableMarkdown !== 'function') {
     toast('表格组件未加载，请刷新页面（强制刷新可清缓存）');
     return;
@@ -2238,12 +2643,11 @@ function tableOperate(op) {
 function handleMdAction(kind) {
   if (!currentId) { toast('请先打开一条便签'); return; }
   if (kind === 'preview') { togglePreview(); return; }
-  if (viewMode === 'view') applyViewMode('edit');
+  // 字号是本机外观设置，两种编辑模式下都生效
+  if (kind.indexOf('fs-') === 0) { applyFontSize(kind.slice(3)); return; }
+  if (isRichMode()) { handleRichAction(kind); return; }
+  if (viewMode === 'view') applyViewMode('source');
   if (kind === 'table') { insertTable(); return; }
-  if (kind === 'fs-small' || kind === 'fs-large' || kind === 'fs-xlarge') {
-    applyFontSize(kind.slice(3));
-    return;
-  }
   if (kind === 'row-add' || kind === 'row-del' || kind === 'col-add' || kind === 'col-del') {
     tableOperate(kind);
     return;
@@ -2276,6 +2680,11 @@ function handleMdAction(kind) {
     default: break;
   }
 }
+
+// 富文本里点工具栏不能让 contenteditable 失焦：一旦失焦选区就没了，加粗/标题会作用不到文字上。
+els.mdToolbar.addEventListener('mousedown', (event) => {
+  if (isRichMode() && event.target.closest('[data-md]')) event.preventDefault();
+});
 
 els.mdToolbar.addEventListener('click', (event) => {
   const btn = event.target.closest('[data-md]');
@@ -2388,12 +2797,13 @@ function handleEdit() {
   if (!note || !cryptoKey) return;
   const plain = plainCache.get(currentId) || { title: '', body: '', body_format: 'md', folder: '', attachments: [] };
   plain.title = els.titleInput.value;
-  plain.body = els.bodyInput.value;
+  plain.body = currentBodyMd();
   plain.body_format = 'md';
   if (typeof plain.folder !== 'string') plain.folder = '';
   if (!Array.isArray(plain.attachments)) plain.attachments = [];
   plainCache.set(currentId, plain);
   setSaveState('编辑中…');
+  if (viewMode === 'source') autoGrowBody();
   schedulePreview();
   clearTimeout(saveTimer);
   saveTimer = setTimeout(() => {
@@ -2405,6 +2815,35 @@ function handleEdit() {
 
 els.titleInput.addEventListener('input', handleEdit);
 els.bodyInput.addEventListener('input', handleEdit);
+
+// ---------- 富文本事件 ----------
+if (els.richEditor) {
+  els.richEditor.addEventListener('input', () => {
+    richDirty = true;
+    updateRichPlaceholder();
+    handleEdit();
+  });
+  // 失焦即落盘，避免切走时丢掉最后一次输入
+  els.richEditor.addEventListener('blur', () => { flushRich(); });
+  els.richEditor.addEventListener('keydown', richKeydown);
+  els.richEditor.addEventListener('paste', (event) => {
+    event.preventDefault();
+    const data = event.clipboardData || window.clipboardData;
+    const text = data ? data.getData('text/plain') : '';
+    if (!text) return;
+    // 只收纯文本：外部 HTML 带着样式/脚本进来会污染便签，也会让序列化不可控
+    richInsertHtml(NN_MD.esc(text).replace(/\r\n?/g, '\n').replace(/\n/g, '<br>'));
+    richChanged();
+  });
+  els.richEditor.addEventListener('drop', (event) => { event.preventDefault(); });
+  els.richEditor.addEventListener('change', (event) => {
+    if (event.target && event.target.type === 'checkbox') richChanged();
+  });
+  document.addEventListener('selectionchange', () => {
+    rememberRichRange();
+    scheduleRichToolbarState();
+  });
+}
 
 function flushPendingEdit() {
   if (!saveTimer) return;
@@ -2494,8 +2933,8 @@ els.cancelSettings.addEventListener('click', () => closeDialog(els.settingsDialo
 els.saveSettings.addEventListener('click', () => {
   applyTheme(els.themeSelect.value);
   applyEditorFont(els.editorFontSelect.value);
-  const nextDefaultView = ['edit', 'split', 'view'].includes(els.defaultViewSelect.value)
-    ? els.defaultViewSelect.value : 'split';
+  const nextDefaultView = VIEW_MODES.includes(els.defaultViewSelect.value)
+    ? els.defaultViewSelect.value : 'rich';
   localStorage.setItem('nn-default-view', nextDefaultView);
   applyViewMode(nextDefaultView);
   localStorage.setItem('nn-theme', theme);
@@ -2561,9 +3000,19 @@ els.importFile.addEventListener('change', () => {
   if (!AUDIO_PROFILES[audioQuality]) audioQuality = 'balanced';
   applyTheme(localStorage.getItem('nn-theme') || 'light');
   applyEditorFont(localStorage.getItem('nn-editor-font') || 'normal');
+  // 旧版本（edit/split/view）一次性迁移到新的四视图，默认进入富文本。
+  // 老的分栏是默认值而非用户主动选择，用户反馈「分栏别扭」，所以 split 也迁到 rich。
+  if (localStorage.getItem('nn-view-v2') !== '1') {
+    const legacyMap = { edit: 'source', split: 'rich' };
+    const oldView = localStorage.getItem('nn-view-mode');
+    if (oldView) localStorage.setItem('nn-view-mode', legacyMap[oldView] || oldView);
+    const oldDefault = localStorage.getItem('nn-default-view');
+    if (oldDefault) localStorage.setItem('nn-default-view', legacyMap[oldDefault] || oldDefault);
+    localStorage.setItem('nn-view-v2', '1');
+  }
   const storedView = localStorage.getItem('nn-view-mode');
-  const defaultView = localStorage.getItem('nn-default-view') || (window.innerWidth >= 760 ? 'split' : 'edit');
-  applyViewMode(['edit', 'split', 'view'].includes(storedView) ? storedView : defaultView, false);
+  const defaultView = localStorage.getItem('nn-default-view') || 'rich';
+  applyViewMode(VIEW_MODES.includes(storedView) ? storedView : defaultView, false);
   localStorage.setItem('nn-device', deviceId);
 
   try {

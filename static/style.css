@@ -240,12 +240,12 @@ mark { background: var(--mark); color: inherit; border-radius: 2px; padding: 0 1
 }
 .md-btn {
   flex: none; border: 1px solid transparent; background: transparent;
-  border-radius: 7px; padding: 5px 9px; font-size: 13px; line-height: 1.4;
+  border-radius: 7px; padding: 5px 8px; font-size: 13px; line-height: 1.4;
   color: var(--text-soft); white-space: nowrap;
 }
 .md-btn:hover { background: var(--panel-hover); border-color: transparent; color: var(--text); }
 .md-btn.active { background: var(--primary-soft); color: var(--primary); font-weight: 700; }
-.md-sep { flex: none; width: 1px; height: 18px; background: var(--border); margin: 0 4px; }
+.md-sep { flex: none; width: 1px; height: 18px; background: var(--border); margin: 0 2px; }
 .md-spacer { flex: 1; min-width: 8px; }
 .md-btn.md-fs { font-weight: 700; font-variant-numeric: tabular-nums; }
 
@@ -271,9 +271,35 @@ mark { background: var(--mark); color: inherit; border-radius: 2px; padding: 0 1
 .body-input:focus { border-color: var(--primary); }
 .body-input::placeholder { color: var(--muted); }
 .md-preview { padding: 18px 22px 26px; }
-/* 视图模式：分栏时两栏都在；仅编辑/仅预览时收起整栏（含标签） */
-body.view-edit .preview-pane, body.view-view .source-pane { display: none; }
-body.view-edit .writing-pane, body.view-view .writing-pane { grid-template-columns: minmax(0, 1fr); }
+/* 视图显隐：rich 用富文本编辑区，source/split 用源码，split/view 用预览 */
+body.view-rich .writing-pane { display: none; }
+body:not(.view-rich) .rich-pane { display: none; }
+body.view-source .preview-pane { display: none; }
+body.view-source .writing-pane, body.view-view .writing-pane { grid-template-columns: minmax(0, 1fr); }
+body.view-view .source-pane { display: none; }
+/* 源码单栏：textarea 由 JS 撑到内容高度，整页滚动，不再自带滚动条 */
+body.view-source .body-input { overflow: hidden; resize: none; min-height: 320px; }
+
+/* ---------- 富文本编辑区（对标 Joplin 移动端的富文本模式） ---------- */
+.rich-pane { margin-top: 14px; position: relative; }
+.rich-editor.md-preview {
+  border: 0; background: transparent; box-shadow: none;
+  padding: 4px 2px 160px; min-height: 58vh; overflow: visible;
+  outline: 0; font-size: var(--editor-fs); line-height: 1.85;
+  word-break: break-word;
+}
+.rich-editor.is-empty::before {
+  content: attr(data-placeholder);
+  position: absolute; left: 2px; top: 6px;
+  color: var(--muted); opacity: .75; pointer-events: none;
+}
+.rich-editor p, .rich-editor h1, .rich-editor h2, .rich-editor h3,
+.rich-editor h4, .rich-editor h5, .rich-editor h6, .rich-editor li { outline: 0; }
+.rich-editor input[type="checkbox"] { cursor: pointer; }
+.rich-editor figure.md-image img { cursor: default; }
+.rich-editor table.md-table { width: auto; }
+.rich-editor table.md-table td, .rich-editor table.md-table th { min-width: 72px; cursor: text; }
+.rich-editor blockquote { border-left-width: 3px; }
 
 .md-preview h1, .md-preview h2, .md-preview h3,
 .md-preview h4, .md-preview h5, .md-preview h6 { margin: 18px 0 8px; line-height: 1.4; letter-spacing: -.01em; }
@@ -458,4 +484,8 @@ button.block { display: block; width: 100%; margin-top: 18px; padding: 11px; }
   .body-input, .md-preview { min-height: 300px; padding: 14px; }
   body.view-split .body-input { min-height: 240px; }
   body.view-split .md-preview { min-height: 300px; }
+  /* 手机宽度下「已加密 · 字数 · 时间 · 设备」挤掉视图切换，优先保证按钮完整 */
+  .editor-meta { display: none; }
+  .rich-editor.md-preview { min-height: 70vh; padding: 2px 0 160px; }
+  .view-switch button { padding: 5px 7px; font-size: 11px; }
 }

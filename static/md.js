@@ -36,8 +36,11 @@ var NN_MD = (function () {
     var data = String(att.data || '').replace(/[^A-Za-z0-9+/=]/g, '');
     if (!data) return '';
     var label = esc(att.name || '图片');
-    return '<figure class="md-image"><img src="data:' + mime + ';base64,' + data +
-      '" alt="' + label + '" data-preview-image="1"><figcaption>' + label + '</figcaption></figure>';
+    // data-att 只在富文本编辑态有用：html2md.js 靠它把图片还原成 ![[att:id]] 占位符
+    var attId = String(att.id || '');
+    var attAttr = /^[A-Za-z0-9_-]{1,80}$/.test(attId) ? ' data-att="' + attId + '"' : '';
+    return '<figure class="md-image"' + attAttr + '><img src="data:' + mime + ';base64,' + data +
+      '" alt="' + label + '" data-preview-image="1"' + attAttr + '><figcaption>' + label + '</figcaption></figure>';
   }
 
   function safeHref(url) {
@@ -269,7 +272,7 @@ var NN_MD = (function () {
       if (attHead) {
         var att = byId.get(attHead[1]);
         out.push(att ? figureHTML(att)
-          : '<div class="md-missing-image">（正文引用的图片附件缺失）</div>');
+          : '<div class="md-missing-image" data-att="' + attHead[1] + '">（正文引用的图片附件缺失）</div>');
         i += 1;
         continue;
       }
@@ -357,6 +360,8 @@ var NN_MD = (function () {
     var lines = [];
     raw.split('\n').forEach(function (line) {
       if (ATT_HEAD_RE.test(line)) { lines.push('[图片]'); return; }
+      // 表格分隔行（|---|:--:|）在摘要里没有意义，直接丢掉
+      if (line.indexOf('|') >= 0 && TABLE_SEP_RE.test(line)) return;
       lines.push(line
         .replace(ATT_REF_RE, '[图片]')
         .replace(FS_STRIP_ALL_RE, '$1')
@@ -373,6 +378,7 @@ var NN_MD = (function () {
         .replace(/`([^`]+)`/g, '$1')
         .replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1')
         .replace(/\[([^\]]*)\]\([^)]*\)/g, '$1')
+        .replace(/\|/g, ' ')
         .replace(/^\s*([-*_])\s*(?:\1[\s]*){2,}$/, '---'));
     });
     return lines.join('\n').replace(/\s+/g, ' ').trim();

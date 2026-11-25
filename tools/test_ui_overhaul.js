@@ -57,7 +57,8 @@ ok('工具栏字号立即作用于编辑区（不再插入 span 源码）', () =
 });
 
 ok('插入表格直接落到正文，不依赖 dialog/prompt（WebView 兼容）', () => {
-  const block = app.slice(app.indexOf('function insertTable'), app.indexOf('// 表格增删行列'));
+  const start = app.indexOf('function insertTable(cols');
+  const block = app.slice(start, app.indexOf('// 表格增删行列')).replace(/^\s*\/\/.*$/gm, '');
   // 点一下即插入：函数内直接改 textarea，并调用 Markdown 表格生成
   assert.match(block, /NN_MD\.insertTableMarkdown\(m, n\)/);
   assert.match(block, /ta\.setSelectionRange\(caret, caret\)/);
@@ -99,11 +100,11 @@ ok('三区布局：分类栏 + 便签列表 + 编辑预览区', () => {
 
 ok('视图切换固定在编辑器顶部，不再藏在横向工具栏里', () => {
   const head = html.slice(html.indexOf('class="editor-head"'), html.indexOf('class="editor-scroll"'));
-  assert.match(head, /data-view="edit"/);
-  assert.match(head, /data-view="split"/);
-  assert.match(head, /data-view="view"/);
+  ['rich', 'source', 'split', 'view'].forEach((view) => {
+    assert.match(head, new RegExp('data-view="' + view + '"'));
+  });
   assert.doesNotMatch(head, /md-toolbar/);
-  const toolbar = html.slice(html.indexOf('id="mdToolbar"'), html.indexOf('class="writing-pane"'));
+  const toolbar = html.slice(html.indexOf('id="mdToolbar"'), html.indexOf('class="rich-pane"'));
   assert.doesNotMatch(toolbar, /data-view|预览/);
   assert.match(app, /function applyViewMode\(next, persist = true\)/);
   assert.match(app, /localStorage\.setItem\('nn-view-mode', viewMode\)/);
@@ -113,12 +114,12 @@ ok('分栏预览随输入实时更新，双栏滚动联动', () => {
   assert.match(app, /function schedulePreview\(\)/);
   assert.match(app, /schedulePreview\(\);/);
   assert.match(app, /function syncPaneScroll\(from, to\)/);
-  assert.match(css, /body\.view-edit \.preview-pane/);
+  assert.match(css, /body\.view-source \.preview-pane/);
   assert.match(css, /body\.view-view \.source-pane/);
 });
 
-ok('Service Worker 缓存已升版到 v17', () => {
-  assert.match(sw, /const CACHE = 'nas-notes-v17'/);
+ok('Service Worker 缓存已升版到 v18', () => {
+  assert.match(sw, /const CACHE = 'nas-notes-v18'/);
 });
 
 console.log('\nUI overhaul tests: ' + pass + ' pass');

@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <title>rich roundtrip fixture</title>
+</head>
+<body>
+  <div id="stage" style="position:absolute;left:-9999px;top:0"></div>
+  <pre id="result">PENDING</pre>
+  <script src="/static/md.js"></script>
+  <script src="/static/html2md.js"></script>
+  <script>
+    (function () {
+      var CASES = [
+        { name: '标题层级', md: '# 一级标题\n\n## 二级标题\n\n### 三级标题' },
+        { name: '行内样式', md: '这是**加粗**、*斜体*、~~删除线~~和`行内代码`。' },
+        { name: '无序列表', md: '- 第一项\n- 第二项\n- 第三项' },
+        { name: '有序列表', md: '1. 一\n2. 二\n3. 三' },
+        { name: '任务列表', md: '- [ ] 未完成\n- [x] 已完成' },
+        { name: '引用块', md: '> 引用第一行\n> 引用第二行' },
+        { name: '代码块', md: '```\nfunction a() {\n  return 1;\n}\n```' },
+        { name: '表格', md: '| 姓名 | 年龄 | 城市 |\n| --- | --- | --- |\n| 张三 | 30 | 北京 |\n| 李四 | 25 | 上海 |' },
+        { name: '分隔线', md: '上面\n\n---\n\n下面' },
+        { name: '段落换行', md: '第一行\n第二行\n\n新段落' },
+        { name: '字号包裹', md: '<span style="font-size:large">大一号的文字</span>' },
+        { name: '链接', md: '访问[轻签](https://example.com)看看' },
+        { name: '图片占位', md: '文字\n\n![[att:abc123]]\n\n更多文字' },
+        { name: '混合长文', md: '# 周报\n\n本周完成**三件**事：\n\n- 修复表格\n- 重做编辑区\n\n> 下周继续\n\n| 项 | 状态 |\n| --- | --- |\n| UI | 完成 |' },
+        { name: '空文本', md: '' },
+        { name: '特殊字符', md: 'a < b & c > d "引号" \'单引号\'' }
+      ];
+
+      function normalize(html) {
+        return String(html).replace(/\s+/g, ' ').replace(/>\s+</g, '><').trim();
+      }
+
+      var report = CASES.map(function (item) {
+        var stage = document.getElementById('stage');
+        stage.innerHTML = '';
+        try {
+          var html1 = NN_MD.render(item.md, []);
+          stage.innerHTML = html1;
+          var md2 = NN_HTML2MD.fromNode(stage);
+          var html2 = NN_MD.render(md2, []);
+          // 再走一轮，验证稳定（第二次结果应与第一次完全一致）
+          stage.innerHTML = html2;
+          var md3 = NN_HTML2MD.fromNode(stage);
+          var html3 = NN_MD.render(md3, []);
+          return {
+            name: item.name,
+            ok: normalize(html1) === normalize(html2) && normalize(html2) === normalize(html3),
+            stable: normalize(html2) === normalize(html3),
+            md2: md2,
+            html1: normalize(html1),
+            html2: normalize(html2)
+          };
+        } catch (error) {
+          return { name: item.name, ok: false, error: String(error && error.message || error) };
+        }
+      });
+
+      var failed = report.filter(function (r) { return !r.ok; });
+      document.getElementById('result').textContent = JSON.stringify({
+        total: report.length,
+        failed: failed.length,
+        failures: failed
+      }, null, 1);
+    })();
+  </script>
+</body>
+</html>

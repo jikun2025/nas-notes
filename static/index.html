@@ -75,8 +75,9 @@
         <button id="backBtn" class="back" type="button" aria-label="返回列表">←</button>
         <div class="editor-meta" id="editorMeta">未选择便签</div>
         <div class="view-switch" role="group" aria-label="编辑视图">
-          <button type="button" data-view="edit" title="仅编辑">✎ 编辑</button>
-          <button type="button" data-view="split" class="active" title="左侧编辑、右侧实时预览">▥ 分栏</button>
+          <button type="button" data-view="rich" class="active" title="富文本：直接看到排版效果，不显示 Markdown 符号">✍ 富文本</button>
+          <button type="button" data-view="source" title="Markdown 源码">⌨ 源码</button>
+          <button type="button" data-view="split" title="左侧源码、右侧实时预览">▥ 分栏</button>
           <button type="button" data-view="view" title="仅预览">👁 预览</button>
         </div>
         <button id="deleteBtn" class="danger subtle" type="button" hidden>删除</button>
@@ -118,6 +119,13 @@
             <button type="button" class="md-btn" data-md="row-del" title="删除光标所在行">－行</button>
             <button type="button" class="md-btn" data-md="col-add" title="光标右侧加一列">＋列</button>
             <button type="button" class="md-btn" data-md="col-del" title="删除光标所在列">－列</button>
+          </div>
+          <!-- 富文本编辑区：直接编辑渲染后的 DOM（对标 Joplin 移动端的「富文本」模式），
+               保存时由 html2md.js 序列化回 Markdown。 -->
+          <div class="rich-pane" id="richPane">
+            <div id="richEditor" class="md-preview rich-editor" contenteditable="true" role="textbox"
+              aria-multiline="true" aria-label="正文（富文本）" spellcheck="false"
+              data-placeholder="开始写点什么…支持加粗、标题、列表、表格、图片"></div>
           </div>
           <div class="writing-pane" id="writingPane">
             <section class="source-pane">
@@ -201,8 +209,9 @@
             </select>
             <label for="defaultViewSelect">默认编辑视图</label>
             <select id="defaultViewSelect">
-              <option value="split">分栏（编辑 + 实时预览）</option>
-              <option value="edit">仅编辑</option>
+              <option value="rich">富文本（直接看排版）</option>
+              <option value="source">Markdown 源码</option>
+              <option value="split">分栏（源码 + 实时预览）</option>
               <option value="view">仅预览</option>
             </select>
             <label for="imageQuality">图片压缩强度</label>
@@ -286,6 +295,7 @@
   <div id="toast" class="toast" hidden></div>
   <script src="/cryptofb.js"></script>
   <script src="/md.js"></script>
+  <script src="/html2md.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>
