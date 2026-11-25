@@ -22,3 +22,12 @@ Thumbs.db
 # Test / temporary artifacts
 *.log
 *.tmp
+
+# Android build artifacts
+android/.gradle/
+android/**/build/
+android/keystore.properties
+android/*.jks
+
+dist/
+android/local.properties

@@ -5,8 +5,9 @@ services:
     container_name: nas-notes
     restart: unless-stopped
     ports:
+      # 宿主 28080 → 容器 8080（NAS 上 8080 已被 reader 容器占用）
       # 仅给反向代理使用；手机端 PWA 离线需要 HTTPS，请配合反代域名访问
-      - "8080:8080"
+      - "28080:8080"
     environment:
       PORT: "8080"
       DATA_DIR: "/data"

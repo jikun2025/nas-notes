@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="utf-8"?>
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+    <!-- 便签轮廓 -->
+    <path
+        android:pathData="M36,32 h36 a4,4 0 0 1 4,4 v38 a4,4 0 0 1 -4,4 h-36 a4,4 0 0 1 -4,-4 v-38 a4,4 0 0 1 4,-4 z"
+        android:fillColor="#FFFFFF" />
+    <!-- 文字行 -->
+    <path
+        android:pathData="M40,44 h28 v3 h-28 z M40,52 h28 v3 h-28 z M40,60 h18 v3 h-18 z"
+        android:fillColor="#2f6fed" />
+    <!-- 锁（加密标识） -->
+    <path
+        android:pathData="M63,58 h14 a2,2 0 0 1 2,2 v10 a2,2 0 0 1 -2,2 h-14 a2,2 0 0 1 -2,-2 v-10 a2,2 0 0 1 2,-2 z"
+        android:fillColor="#1c4fc4" />
+    <path
+        android:pathData="M66,58 v-4 a4,4 0 0 1 8,0 v4 h-3 v-4 a1.2,1.2 0 0 0 -2.4,0 v4 z"
+        android:fillColor="#1c4fc4" />
+</vector>

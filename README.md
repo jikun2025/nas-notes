@@ -36,19 +36,42 @@
    docker compose up -d --build
    ```
 
-4. 浏览器打开 `http://NAS_IP:8080`，首次进入会要求创建加密库。设置至少 8 位的加密口令，确认后即可使用。
+4. 浏览器打开 `http://NAS_IP:28080`，首次进入会要求创建加密库。设置至少 8 位的加密口令，确认后即可使用。（宿主端口为 28080——NAS 上 8080 已被 reader 容器占用；容器内仍是 8080。）
 5. 页面右下角「设置」中填入第 2 步的 `NOTES_TOKEN` 并保存（同一令牌只需在每个浏览器/设备填一次）。
 
 飞牛 NAS 用户也可以使用图形界面：Docker → Compose → 新增项目 → 项目路径选择该目录 → 创建项目。`NOTES_TOKEN` 可直接写在 compose 文件里，或通过 `.env` 提供。
 
 ### 手机端（安卓）
 
-1. **必须先配置 HTTPS**。`http://NAS_IP:8080` 下 Service Worker 和 WebCrypto 不可用，PWA 无法离线。推荐用飞牛自带反向代理 + 域名证书，或 Nginx Proxy Manager / Caddy，把 HTTPS 域名反代到容器 `8080` 端口。
+1. **必须先配置 HTTPS**。`http://NAS_IP:28080` 下 Service Worker 和 WebCrypto 不可用，PWA 无法离线。推荐用飞牛自带反向代理 + 域名证书，或 Nginx Proxy Manager / Caddy，把 HTTPS 域名反代到容器 `8080` 端口（即宿主 `28080`）。
 2. 安卓 Chrome 打开 HTTPS 域名，菜单 →「添加到主屏幕」。
 3. 首次在线打开，输入与 NAS 端相同的加密口令并完成同步。
 4. 之后断网也能打开、编辑、搜索；自动模式下恢复网络后会同步，手动模式下点「同步」按钮即可。
 
 > iOS 同样支持添加到主屏幕，但本文只验证了安卓路径。
+
+### 安卓 APK 壳（`android/` 目录，免 HTTPS）
+
+不想给 NAS 配 HTTPS 反代时，可以用仓库自带的原生 APK 壳（`android/`，纯 Java、零第三方依赖、仅平台内置 API）：
+
+- 前端与 PWA **共用同一份 `static/`**（Gradle 直接把仓库根目录的 `static/` 挂为 assets），代码零复制零改动；壳里仅额外注入一个 `assets/_bridge.js`（劫持 `fetch('/api/*')` → 原生转发、blob 下载 → 原生保存、设置页注入服务器地址行）。
+- 页面挂在 WebView 虚拟安全域 `https://appassets.androidplatform.net/` 下，`crypto.subtle`、IndexedDB、localStorage 全部可用——**APK 不要求 NAS 提供 HTTPS**；原生层只转发密文，不接触明文。
+- NAS 地址在 App 内「设置 → NAS 服务器」里配置（存原生 SharedPreferences），默认 `http://192.168.5.10:28080`，带连接测试按钮；换端口/域名不必重新打包。
+- 加密备份导出改存到系统「下载/NasNotes」目录；文件选择（插图/导入）与录音麦克风权限走原生桥接。
+
+构建（需 JDK 17 + Android SDK platform 35 / build-tools 35.0.0，注意 `JAVA_HOME` 必须指向 JDK 17）：
+
+```bash
+cd android
+sdkmanager "platforms;android-35" "build-tools;35.0.0"   # 已装可跳过
+keytool -genkeypair -keystore nasnotes-release.jks -alias nasnotes -keyalg RSA -keysize 2048 -validity 10000 \
+  -storepass <密码> -keypass <密码> -dname "CN=NasNotes Shell, OU=local, O=nas-notes, C=CN"
+# 生成 keystore.properties（storeFile/storePassword/keyAlias/keyPassword 四行）
+gradle assembleRelease
+# 产物：app/build/outputs/apk/release/app-release.apk
+```
+
+把 APK 传到手机安装即可（自签名，需允许「安装未知应用」）。`keystore.properties` 与 `*.jks` 已被 gitignore，密钥请自行备份——丢失后无法用同一签名升级。
 
 ## 安全模型
 
