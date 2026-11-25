@@ -1,0 +1,85 @@
+'use strict';
+// UI 重构静态回归：两级设置、便签右键/长按菜单、应用内弹窗、字号与表格工具。
+// 纯静态检查，零依赖。运行：node tools/test_ui_overhaul.js
+
+const fs = require('fs');
+const path = require('path');
+const assert = require('node:assert');
+
+const ROOT = path.join(__dirname, '..');
+const read = (name) => fs.readFileSync(path.join(ROOT, 'static', name), 'utf8');
+const html = read('index.html');
+const css = read('style.css');
+const app = read('app.js');
+const sw = read('sw.js');
+
+let pass = 0;
+function ok(name, fn) {
+  try { fn(); pass++; console.log('  PASS ' + name); }
+  catch (e) { console.error('  FAIL ' + name + ': ' + e.message); process.exitCode = 1; }
+}
+
+ok('设置为两级结构：五个分类入口对应五个面板', () => {
+  const nav = html.match(/data-settings-panel="/g) || [];
+  const panels = html.match(/class="settings-panel"/g) || [];
+  assert.strictEqual(nav.length, 5);
+  assert.strictEqual(panels.length, 5);
+  assert.match(html, /class="settings-nav"/);
+  assert.match(css, /\.settings-shell\s*\{[^}]*display:\s*flex/);
+});
+
+ok('设置面板默认只显示账户分类', () => {
+  const panels = html.match(/<section class="settings-panel"[^>]*>/g) || [];
+  assert.strictEqual(panels.length, 5);
+  panels.forEach((tag, i) => {
+    assert.strictEqual(/\shidden/.test(tag), i !== 0, 'panel ' + i + ' hidden 状态不对');
+  });
+  assert.match(app, /function showSettingsPanel\(name\)/);
+});
+
+ok('外观设置含主题与编辑字号，保存写入本机', () => {
+  assert.match(html, /id="themeSelect"[\s\S]{0,160}<option value="light"/);
+  assert.match(html, /id="editorFontSelect"[\s\S]{0,220}<option value="xlarge"/);
+  assert.match(css, /:root\[data-theme="dark"\]/);
+  assert.match(app, /localStorage\.setItem\('nn-theme', theme\)/);
+  assert.match(app, /localStorage\.setItem\('nn-editor-font', editorFont\)/);
+  assert.match(css, /--editor-fs:/);
+});
+
+ok('工具栏字号立即作用于编辑区（不再插入 span 源码）', () => {
+  assert.match(html, /data-md="fs-small"[^>]*>A-/);
+  assert.match(html, /data-md="fs-normal"[^>]*>A</);
+  assert.match(html, /data-md="fs-large"[^>]*>A\+/);
+  const block = app.slice(app.indexOf('function applyFontSize'), app.indexOf('// 插入表格'));
+  assert.match(block, /applyEditorFont\(key\)/);
+  assert.match(block, /localStorage\.setItem\('nn-editor-font'/);
+  assert.doesNotMatch(block, /fsWrap/);
+});
+
+ok('插入表格使用应用内弹窗，不再依赖 prompt', () => {
+  assert.match(html, /id="tableDialog"[^>]*>/);
+  assert.match(html, /id="tableCols"[^>]*type="number"/);
+  assert.match(html, /id="tableRows"[^>]*type="number"/);
+  const block = app.slice(app.indexOf('function insertTable'), app.indexOf('// 表格增删行列'));
+  assert.match(block, /els\.tableDialog\.showModal\(\)/);
+  assert.doesNotMatch(block, /\bprompt\(/);
+  assert.doesNotMatch(app, /window\.prompt\(|window\.confirm\(/);
+});
+
+ok('便签列表支持右键与长按，菜单含删除/分类', () => {
+  assert.match(html, /id="noteContextMenu"[^>]*>/);
+  ['open', 'folder', 'delete'].forEach((action) => {
+    assert.match(html, new RegExp('data-action="' + action + '"'));
+  });
+  assert.match(app, /els\.noteList\.addEventListener\('contextmenu'/);
+  assert.match(app, /els\.noteList\.addEventListener\('touchstart'/);
+  assert.match(app, /function showContextMenu\(x, y, id\)/);
+  assert.match(app, /function openFolderDialog\(id\)/);
+  assert.match(app, /function deleteNoteById\(id\)/);
+});
+
+ok('Service Worker 缓存已升版到 v15', () => {
+  assert.match(sw, /const CACHE = 'nas-notes-v15'/);
+});
+
+console.log('\nUI overhaul tests: ' + pass + ' pass');

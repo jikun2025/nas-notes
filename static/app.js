@@ -65,6 +65,11 @@ const els = {
   lockBtn: document.getElementById('lockBtn'),
   settingsBtn: document.getElementById('settingsBtn'),
   settingsDialog: document.getElementById('settingsDialog'),
+  settingsNav: document.querySelector('.settings-nav'),
+  settingsTitle: document.getElementById('settingsTitle'),
+  settingsClose: document.getElementById('settingsClose'),
+  themeSelect: document.getElementById('themeSelect'),
+  editorFontSelect: document.getElementById('editorFontSelect'),
   acctNameInput: document.getElementById('acctNameInput'),
   acctCurrentInput: document.getElementById('acctCurrentInput'),
   acctNewInput: document.getElementById('acctNewInput'),
@@ -101,6 +106,28 @@ const els = {
   recordLabel: document.getElementById('recordLabel'),
   attachCount: document.getElementById('attachCount'),
   attachmentList: document.getElementById('attachmentList'),
+  noteContextMenu: document.getElementById('noteContextMenu'),
+  tableDialog: document.getElementById('tableDialog'),
+  tableCols: document.getElementById('tableCols'),
+  tableRows: document.getElementById('tableRows'),
+  tableCancel: document.getElementById('tableCancel'),
+  tableInsert: document.getElementById('tableInsert'),
+  folderDialog: document.getElementById('folderDialog'),
+  folderDialogTitle: document.getElementById('folderDialogTitle'),
+  folderDialogSelect: document.getElementById('folderDialogSelect'),
+  folderDialogNew: document.getElementById('folderDialogNew'),
+  folderDialogCancel: document.getElementById('folderDialogCancel'),
+  folderDialogSave: document.getElementById('folderDialogSave'),
+  textDialog: document.getElementById('textDialog'),
+  textDialogTitle: document.getElementById('textDialogTitle'),
+  textDialogInput: document.getElementById('textDialogInput'),
+  textDialogCancel: document.getElementById('textDialogCancel'),
+  textDialogOk: document.getElementById('textDialogOk'),
+  confirmDialog: document.getElementById('confirmDialog'),
+  confirmTitle: document.getElementById('confirmTitle'),
+  confirmMessage: document.getElementById('confirmMessage'),
+  confirmCancel: document.getElementById('confirmCancel'),
+  confirmOk: document.getElementById('confirmOk'),
   toast: document.getElementById('toast')
 };
 
@@ -127,6 +154,29 @@ let mediaRecorder = null;
 let recordChunks = [];
 let recordTimer = null;
 let recordStartedAt = 0;
+let theme = 'light';
+let editorFont = 'normal';
+let contextNoteId = null;
+let longPressTimer = null;
+let longPressFired = false;
+
+// ---------- 外观（本机设置，不涉及加密数据） ----------
+const EDITOR_FONT_PX = { small: '13px', normal: '15px', large: '18px', xlarge: '21px' };
+
+function applyTheme(value) {
+  theme = value === 'dark' ? 'dark' : 'light';
+  document.documentElement.dataset.theme = theme;
+  if (els.themeSelect) els.themeSelect.value = theme;
+}
+
+function applyEditorFont(value) {
+  editorFont = EDITOR_FONT_PX[value] ? value : 'normal';
+  document.documentElement.style.setProperty('--editor-fs', EDITOR_FONT_PX[editorFont]);
+  if (els.editorFontSelect) els.editorFontSelect.value = editorFont;
+  els.mdToolbar.querySelectorAll('[data-md^="fs-"]').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.md === 'fs-' + editorFont);
+  });
+}
 
 // ---------- 工具 ----------
 function genId() {
@@ -1325,10 +1375,57 @@ function renderFolderOptions() {
   }
 }
 
-function promptFolderName(initial, title) {
-  const name = window.prompt(title, initial || '');
+// 应用内弹窗：安卓 WebView 默认不显示浏览器原生 prompt/confirm。
+function askText(title, initial, label) {
+  return new Promise((resolve) => {
+    els.textDialogTitle.textContent = title;
+    const lab = els.textDialog.querySelector('label[for="textDialogInput"]');
+    if (lab) lab.textContent = label || '名称';
+    els.textDialogInput.value = initial || '';
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      els.textDialogOk.onclick = null;
+      els.textDialogCancel.onclick = null;
+      els.textDialog.onclose = null;
+      if (els.textDialog.open) els.textDialog.close();
+      resolve(value === null ? null : String(value).trim());
+    };
+    els.textDialogOk.onclick = () => finish(els.textDialogInput.value);
+    els.textDialogCancel.onclick = () => finish(null);
+    els.textDialog.onclose = () => finish(null);
+    els.textDialog.showModal();
+    setTimeout(() => { els.textDialogInput.focus(); els.textDialogInput.select(); }, 0);
+  });
+}
+
+function askConfirm(title, message, okLabel) {
+  return new Promise((resolve) => {
+    els.confirmTitle.textContent = title;
+    els.confirmMessage.textContent = message;
+    els.confirmOk.textContent = okLabel || '确定';
+    let settled = false;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      els.confirmOk.onclick = null;
+      els.confirmCancel.onclick = null;
+      els.confirmDialog.onclose = null;
+      if (els.confirmDialog.open) els.confirmDialog.close();
+      resolve(value);
+    };
+    els.confirmOk.onclick = () => finish(true);
+    els.confirmCancel.onclick = () => finish(false);
+    els.confirmDialog.onclose = () => finish(false);
+    els.confirmDialog.showModal();
+  });
+}
+
+async function promptFolderName(initial, title) {
+  const name = await askText(title, initial || '', '分类名称');
   if (name === null) return null;
-  const trimmed = name.trim().slice(0, 100);
+  const trimmed = name.slice(0, 100);
   if (!trimmed) { toast('分类名不能为空'); return null; }
   if (trimmed === UNGROUPED) { toast('「' + UNGROUPED + '」是保留名称'); return null; }
   return trimmed;
@@ -1388,8 +1485,9 @@ function renderList() {
   els.searchCount.textContent = query ? `${items.length}/${total}` : `${total} 条`;
 
   if (items.length === 0) {
-    els.noteList.innerHTML = '<div class="muted" style="padding:18px 12px">' +
-      (query ? '没有匹配的便签' : '还没有便签，点「新建」开始') + '</div>';
+    els.noteList.innerHTML = '<div class="empty-state"><span class="empty-icon">' +
+      (query ? '⌕' : '✎') + '</span>' +
+      (query ? '没有匹配的便签' : '还没有便签<br>点「新建」写下第一条') + '</div>';
     return;
   }
 
@@ -1767,6 +1865,7 @@ els.newBtn.addEventListener('click', () => {
 });
 
 els.noteList.addEventListener('click', (event) => {
+  if (longPressFired) { longPressFired = false; return; }
   const head = event.target.closest('.folder-group-head');
   if (head) {
     const folder = head.dataset.folder || '';
@@ -1785,6 +1884,122 @@ els.noteList.addEventListener('keydown', (event) => {
     event.target.click();
   }
 });
+
+// ---------- 便签右键 / 长按操作 ----------
+function showContextMenu(x, y, id) {
+  contextNoteId = id;
+  const menu = els.noteContextMenu;
+  menu.hidden = false;
+  const w = menu.offsetWidth || 180;
+  const h = menu.offsetHeight || 130;
+  menu.style.left = Math.max(8, Math.min(x, window.innerWidth - w - 8)) + 'px';
+  menu.style.top = Math.max(8, Math.min(y, window.innerHeight - h - 8)) + 'px';
+}
+
+function hideContextMenu() {
+  els.noteContextMenu.hidden = true;
+  contextNoteId = null;
+}
+
+els.noteList.addEventListener('contextmenu', (event) => {
+  const button = event.target.closest('.note-item');
+  if (!button) return;
+  event.preventDefault();
+  showContextMenu(event.clientX, event.clientY, button.dataset.id);
+});
+
+els.noteList.addEventListener('touchstart', (event) => {
+  const button = event.target.closest('.note-item');
+  if (!button || event.touches.length !== 1) return;
+  const touch = event.touches[0];
+  const x = touch.clientX;
+  const y = touch.clientY;
+  const id = button.dataset.id;
+  clearTimeout(longPressTimer);
+  longPressFired = false;
+  longPressTimer = setTimeout(() => {
+    longPressFired = true;
+    showContextMenu(x, y, id);
+  }, 520);
+}, { passive: true });
+
+['touchmove', 'touchend', 'touchcancel'].forEach((type) => {
+  els.noteList.addEventListener(type, () => {
+    clearTimeout(longPressTimer);
+    longPressTimer = null;
+  }, { passive: true });
+});
+
+els.noteContextMenu.addEventListener('click', async (event) => {
+  const action = event.target.closest('[data-action]');
+  if (!action) return;
+  const id = contextNoteId;
+  hideContextMenu();
+  if (!id) return;
+  if (action.dataset.action === 'open') selectNote(id);
+  else if (action.dataset.action === 'folder') openFolderDialog(id);
+  else if (action.dataset.action === 'delete') deleteNoteById(id);
+});
+
+document.addEventListener('click', (event) => {
+  if (!els.noteContextMenu.hidden && !event.target.closest('#noteContextMenu')) hideContextMenu();
+});
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape' && !els.noteContextMenu.hidden) hideContextMenu();
+});
+
+async function openFolderDialog(id) {
+  const plain = plainCache.get(id);
+  if (!plain) { toast('便签尚未解锁，无法调整分类'); return; }
+  const folders = allFolders();
+  const current = (plain.folder || '').trim();
+  const options = ['<option value="">（' + UNGROUPED + '）</option>'];
+  folders.forEach((name) => options.push('<option value="' + esc(name) + '">' + esc(name) + '</option>'));
+  options.push('<option value="__new__">＋ 新建分类…</option>');
+  els.folderDialogSelect.innerHTML = options.join('');
+  els.folderDialogSelect.value = folders.includes(current) ? current : '';
+  els.folderDialogNew.value = '';
+  syncFolderDialogNew();
+  els.folderDialogTitle.textContent = '调整分类 · ' + (plain.title || '无标题便签').slice(0, 24);
+  let settled = false;
+  const finish = async (save) => {
+    if (settled) return;
+    settled = true;
+    els.folderDialogSave.onclick = null;
+    els.folderDialogCancel.onclick = null;
+    els.folderDialog.onclose = null;
+    if (els.folderDialog.open) els.folderDialog.close();
+    if (!save) return;
+    let name = els.folderDialogSelect.value;
+    if (name === '__new__') {
+      name = (els.folderDialogNew.value || '').trim().slice(0, 100);
+      if (!name) { toast('请输入分类名称'); return; }
+      if (name === UNGROUPED) { toast('「' + UNGROUPED + '」是保留名称'); return; }
+    }
+    const target = plainCache.get(id);
+    if (!target) return;
+    target.folder = name;
+    plainCache.set(id, target);
+    const note = notesCache.get(id);
+    if (note) await queueUpsert(note);
+    if (id === currentId) renderFolderOptions();
+    renderList();
+    toast(name ? '已移入分类「' + name + '」' : '已移入' + UNGROUPED);
+  };
+  els.folderDialogSave.onclick = () => finish(true);
+  els.folderDialogCancel.onclick = () => finish(false);
+  els.folderDialog.onclose = () => finish(false);
+  els.folderDialog.showModal();
+}
+
+function syncFolderDialogNew() {
+  const isNew = els.folderDialogSelect.value === '__new__';
+  els.folderDialogNew.hidden = !isNew;
+  const label = els.folderDialog.querySelector('label[for="folderDialogNew"]');
+  if (label) label.hidden = !isNew;
+  if (isNew) els.folderDialogNew.focus();
+}
+els.folderDialogSelect.addEventListener('change', syncFolderDialogNew);
 
 els.searchInput.addEventListener('input', renderList);
 els.syncBtn.addEventListener('click', () => { clearTimeout(syncTimer); sync(); });
@@ -1843,37 +2058,48 @@ function applyLinePrefix(makePrefix) {
   handleEdit();
 }
 
-// 字号：对选区套 <span style="font-size:small|large|xlarge">…</span>（渲染端白名单定点恢复）。
-// 再次点击同字号且选区即该 span → 取消。
+// 编辑区字号：立即作用于编辑区和预览，设置只保存在本机，不写入便签正文。
 function applyFontSize(size) {
-  const ta = els.bodyInput;
-  const res = NN_MD.fsWrap(ta.value, ta.selectionStart, ta.selectionEnd, size);
-  ta.value = res.text;
-  ta.focus();
-  ta.setSelectionRange(res.start, res.end);
-  handleEdit();
+  const key = String(size).replace(/^fs-/, '');
+  if (!EDITOR_FONT_PX[key]) return;
+  applyEditorFont(key);
+  localStorage.setItem('nn-editor-font', editorFont);
+  const names = { small: '小号', normal: '标准', large: '大号', xlarge: '特大' };
+  toast('编辑区字号：' + names[editorFont]);
 }
 
-// 插入表格：用小弹窗选行列（数字输入，默认 3 列 × 2 行）
+// 插入表格：应用内弹窗选行列（安卓 WebView 不支持 prompt）。
 function insertTable() {
-  const rowsStr = prompt('插入表格：数据行数（不含表头）', '2');
-  if (rowsStr === null) return;
-  const colsStr = prompt('插入表格：列数', '3');
-  if (colsStr === null) return;
-  const rows = Math.max(0, Math.min(50, parseInt(rowsStr, 10) || 0));
-  const cols = Math.max(1, Math.min(20, parseInt(colsStr, 10) || 3));
-  const ta = els.bodyInput;
-  const start = ta.selectionStart;
-  const before = ta.value.slice(0, start);
-  const pad = before && !/\n\n$/.test(before) ? (/\n$/.test(before) ? '\n' : '\n\n') : '';
-  const block = NN_MD.insertTableMarkdown(rows, cols);
-  const tail = '\n';
-  ta.value = before + pad + block + tail + ta.value.slice(ta.selectionEnd);
-  const caret = start + pad.length + block.length + tail.length;
-  ta.focus();
-  ta.setSelectionRange(caret, caret);
-  handleEdit();
-  toast('已插入 ' + cols + ' 列 × ' + rows + ' 行表格：光标放到表上可用「行/列」按钮增删');
+  els.tableCols.value = '3';
+  els.tableRows.value = '2';
+  let settled = false;
+  const finish = (ok) => {
+    if (settled) return;
+    settled = true;
+    els.tableInsert.onclick = null;
+    els.tableCancel.onclick = null;
+    els.tableDialog.onclose = null;
+    if (els.tableDialog.open) els.tableDialog.close();
+    if (!ok) return;
+    const rows = Math.max(0, Math.min(50, parseInt(els.tableRows.value, 10) || 0));
+    const cols = Math.max(1, Math.min(20, parseInt(els.tableCols.value, 10) || 3));
+    const ta = els.bodyInput;
+    const start = ta.selectionStart;
+    const before = ta.value.slice(0, start);
+    const pad = before && !/\n\n$/.test(before) ? (/\n$/.test(before) ? '\n' : '\n\n') : '';
+    const block = NN_MD.insertTableMarkdown(rows, cols);
+    const tail = '\n';
+    ta.value = before + pad + block + tail + ta.value.slice(ta.selectionEnd);
+    const caret = start + pad.length + block.length + tail.length;
+    ta.focus();
+    ta.setSelectionRange(caret, caret);
+    handleEdit();
+    toast('已插入 ' + cols + ' 列 × ' + rows + ' 行表格：光标放到表上可用「行/列」按钮增删');
+  };
+  els.tableInsert.onclick = () => finish(true);
+  els.tableCancel.onclick = () => finish(false);
+  els.tableDialog.onclose = () => finish(false);
+  els.tableDialog.showModal();
 }
 
 // 表格增删行列：根据光标所在行/列定位
@@ -1963,7 +2189,7 @@ els.folderSelect.addEventListener('change', async () => {
 
 els.newFolderBtn.addEventListener('click', async () => {
   if (!currentId) { toast('请先打开一条便签'); return; }
-  const name = promptFolderName('', '新建分类名称');
+  const name = await promptFolderName('', '新建分类名称');
   if (!name) return;
   const plain = currentPlain();
   if (plain) {
@@ -1982,7 +2208,7 @@ els.renameFolderBtn.addEventListener('click', async () => {
   if (!plain) return;
   const from = (plain.folder || '').trim();
   if (!from) return;
-  const to = promptFolderName(from, '重命名分类「' + from + '」为：');
+  const to = await promptFolderName(from, '重命名分类「' + from + '」为：');
   if (!to || to === from) return;
   const touched = await setFolderForAll(from, to);
   if (plain === plainCache.get(currentId)) plain.folder = to;
@@ -1996,7 +2222,8 @@ els.deleteFolderBtn.addEventListener('click', async () => {
   if (!plain) return;
   const from = (plain.folder || '').trim();
   if (!from) return;
-  if (!window.confirm('删除分类「' + from + '」？其中便签会移入' + UNGROUPED + '，便签本身不会删除。')) return;
+  const yes = await askConfirm('删除分类', '删除分类「' + from + '」？其中便签会移入' + UNGROUPED + '，便签本身不会删除。', '删除分类');
+  if (!yes) return;
   const touched = await setFolderForAll(from, '');
   if (plain === plainCache.get(currentId)) plain.folder = '';
   renderFolderOptions();
@@ -2018,18 +2245,24 @@ els.backBtn.addEventListener('click', () => {
   renderList();
 });
 
-els.deleteBtn.addEventListener('click', async () => {
-  if (!currentId) return;
-  if (!window.confirm('确定删除这条便签（含正文图片和录音）？删除会同步到 NAS。')) return;
+async function deleteNoteById(id) {
+  if (!id || !notesCache.has(id)) return;
+  const yes = await askConfirm('删除便签', '确定删除这条便签（含正文图片和录音）？删除会同步到 NAS，且不可恢复。', '删除便签');
+  if (!yes) return;
   clearTimeout(saveTimer);
   stopRecording();
-  await queueDelete(currentId);
-  currentId = null;
-  document.body.classList.remove('show-editor');
-  setSaveState('已保存');
+  await queueDelete(id);
+  if (currentId === id) {
+    currentId = null;
+    document.body.classList.remove('show-editor');
+    setSaveState('已保存');
+    renderEditor();
+  }
   renderList();
-  renderEditor();
-});
+  toast('便签已删除');
+}
+
+els.deleteBtn.addEventListener('click', () => deleteNoteById(currentId));
 
 function handleEdit() {
   const note = notesCache.get(currentId);
@@ -2082,7 +2315,32 @@ window.addEventListener('offline', () => {
   if (cryptoKey) setBadge('离线', 'offline');
 });
 
+const SETTINGS_PANEL_TITLES = {
+  account: '账户', sync: '同步', appearance: '外观与编辑', data: '数据与备份', about: '关于'
+};
+
+function showSettingsPanel(name) {
+  if (!SETTINGS_PANEL_TITLES[name]) name = 'account';
+  els.settingsNav.querySelectorAll('[data-settings-panel]').forEach((btn) => {
+    btn.classList.toggle('active', btn.dataset.settingsPanel === name);
+  });
+  els.settingsDialog.querySelectorAll('.settings-panel').forEach((panel) => {
+    panel.hidden = panel.dataset.panel !== name;
+  });
+  els.settingsTitle.textContent = SETTINGS_PANEL_TITLES[name];
+  els.settingsDialog.querySelector('.settings-body').scrollTop = 0;
+}
+
+els.settingsNav.addEventListener('click', (event) => {
+  const btn = event.target.closest('[data-settings-panel]');
+  if (btn) showSettingsPanel(btn.dataset.settingsPanel);
+});
+els.settingsClose.addEventListener('click', () => els.settingsDialog.close());
+
 els.settingsBtn.addEventListener('click', async () => {
+  applyTheme(theme);
+  applyEditorFont(editorFont);
+  showSettingsPanel('account');
   els.deviceInput.value = deviceId;
   els.syncMode.value = syncMode;
   els.syncInterval.value = String(syncIntervalSec);
@@ -2112,6 +2370,10 @@ els.settingsBtn.addEventListener('click', async () => {
 });
 els.cancelSettings.addEventListener('click', () => els.settingsDialog.close());
 els.saveSettings.addEventListener('click', () => {
+  applyTheme(els.themeSelect.value);
+  applyEditorFont(els.editorFontSelect.value);
+  localStorage.setItem('nn-theme', theme);
+  localStorage.setItem('nn-editor-font', editorFont);
   deviceId = els.deviceInput.value.trim() || genId();
   const nextMode = els.syncMode.value === 'manual' ? 'manual' : 'auto';
   const rawInterval = els.syncInterval.value;
@@ -2171,6 +2433,8 @@ els.importFile.addEventListener('change', () => {
   audioQuality = localStorage.getItem('nn-audio-quality') || 'balanced';
   if (!IMAGE_PROFILES[imageQuality]) imageQuality = 'balanced';
   if (!AUDIO_PROFILES[audioQuality]) audioQuality = 'balanced';
+  applyTheme(localStorage.getItem('nn-theme') || 'light');
+  applyEditorFont(localStorage.getItem('nn-editor-font') || 'normal');
   localStorage.setItem('nn-device', deviceId);
 
   try {

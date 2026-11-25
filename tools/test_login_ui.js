@@ -53,7 +53,7 @@ ok('服务端清库只删 vault 与 notes，不动 accounts', () => {
 });
 
 ok('Service Worker 缓存已升版', () => {
-  assert.match(sw, /const CACHE = 'nas-notes-v14'/);
+  assert.match(sw, /const CACHE = 'nas-notes-v15'/);
 });
 
 console.log('\nlogin UI tests: ' + pass + ' pass');

@@ -38,21 +38,22 @@
   <div class="app">
     <aside class="sidebar" id="sidebar">
       <header class="sidebar-head">
-        <div class="brand">轻签 <span id="syncBadge" class="badge">未解锁</span></div>
-        <button id="newBtn" class="primary" type="button">＋ 新建</button>
+        <div class="brand"><span class="brand-mark">签</span><span>轻签<small>加密便签</small></span><span id="syncBadge" class="badge">未解锁</span></div>
+        <button id="newBtn" class="primary new-btn" type="button" title="新建便签">＋ 新建</button>
       </header>
 
       <div class="search-wrap">
-        <input id="searchInput" type="search" placeholder="全局搜索：标题 + 正文 + 分类" autocomplete="off" spellcheck="false">
+        <span class="search-icon" aria-hidden="true">⌕</span>
+        <input id="searchInput" type="search" placeholder="搜索标题、正文、分类…" autocomplete="off" spellcheck="false">
         <span class="hint" id="searchCount"></span>
       </div>
 
       <div id="noteList" class="note-list" aria-label="便签列表"></div>
 
       <footer class="sidebar-foot">
-        <button id="syncBtn" class="ghost" type="button">同步</button>
-        <button id="lockBtn" class="ghost" type="button">锁定</button>
-        <button id="settingsBtn" class="ghost" type="button">设置</button>
+        <button id="syncBtn" class="ghost" type="button" title="立即同步">↻ 同步</button>
+        <button id="lockBtn" class="ghost" type="button" title="锁定并清除内存明文">🔒 锁定</button>
+        <button id="settingsBtn" class="ghost" type="button" title="设置">⚙ 设置</button>
       </footer>
     </aside>
 
@@ -60,116 +61,207 @@
       <div class="editor-head">
         <button id="backBtn" class="back" type="button" aria-label="返回列表">←</button>
         <div class="editor-meta" id="editorMeta">未选择便签</div>
-        <button id="deleteBtn" class="danger" type="button" hidden>删除</button>
+        <button id="deleteBtn" class="danger subtle" type="button" hidden>删除</button>
       </div>
-      <input id="titleInput" class="title-input" type="text" maxlength="200" placeholder="标题" aria-label="标题">
-      <div class="folder-row">
-        <span class="folder-label">分类</span>
-        <select id="folderSelect" class="folder-select" aria-label="便签分类"></select>
-        <button id="newFolderBtn" class="ghost small" type="button" title="新建分类">＋分类</button>
-        <button id="renameFolderBtn" class="ghost small" type="button" title="重命名当前分类" hidden>改名</button>
-        <button id="deleteFolderBtn" class="ghost small" type="button" title="删除当前分类（其中便签移入未分类）" hidden>删分类</button>
+      <div class="editor-scroll">
+        <div class="editor-page">
+          <input id="titleInput" class="title-input" type="text" maxlength="200" placeholder="无标题便签" aria-label="标题">
+          <div class="folder-row">
+            <span class="folder-label">分类</span>
+            <select id="folderSelect" class="folder-select" aria-label="便签分类"></select>
+            <button id="newFolderBtn" class="ghost small" type="button" title="新建分类">＋ 新建</button>
+            <button id="renameFolderBtn" class="ghost small" type="button" title="重命名当前分类" hidden>改名</button>
+            <button id="deleteFolderBtn" class="ghost small" type="button" title="删除当前分类（其中便签移入未分类）" hidden>删分类</button>
+          </div>
+          <div class="md-toolbar" id="mdToolbar" role="toolbar" aria-label="Markdown 排版工具">
+            <button type="button" class="md-btn" data-md="bold" title="加粗 **文字**"><b>B</b></button>
+            <button type="button" class="md-btn" data-md="italic" title="斜体 *文字*"><i>I</i></button>
+            <button type="button" class="md-btn" data-md="strike" title="删除线 ~~文字~~"><s>S</s></button>
+            <span class="md-sep"></span>
+            <button type="button" class="md-btn" data-md="h1" title="一级标题">H1</button>
+            <button type="button" class="md-btn" data-md="h2" title="二级标题">H2</button>
+            <button type="button" class="md-btn" data-md="h3" title="三级标题">H3</button>
+            <span class="md-sep"></span>
+            <button type="button" class="md-btn" data-md="ul" title="无序列表">•≡</button>
+            <button type="button" class="md-btn" data-md="ol" title="有序列表">1.≡</button>
+            <button type="button" class="md-btn" data-md="task" title="待办项 - [ ]">☑</button>
+            <span class="md-sep"></span>
+            <button type="button" class="md-btn" data-md="link" title="链接 [文字](网址)">🔗</button>
+            <button type="button" class="md-btn" data-md="quote" title="引用 &gt; 文字">❝</button>
+            <button type="button" class="md-btn" data-md="code" title="代码 `文字` / ```块```">&lt;/&gt;</button>
+            <button type="button" class="md-btn" data-md="hr" title="分隔线 ---">―</button>
+            <span class="md-sep"></span>
+            <button type="button" class="md-btn md-fs" data-md="fs-small" title="编辑区小字体">A-</button>
+            <button type="button" class="md-btn md-fs active" data-md="fs-normal" title="编辑区标准字体">A</button>
+            <button type="button" class="md-btn md-fs" data-md="fs-large" title="编辑区大字体">A+</button>
+            <span class="md-sep"></span>
+            <button type="button" class="md-btn" data-md="table" title="插入表格（弹窗选行列）">▦ 表格</button>
+            <button type="button" class="md-btn" data-md="row-add" title="光标在表格内：末尾加一行">＋行</button>
+            <button type="button" class="md-btn" data-md="row-del" title="光标在表格内：删除光标所在行">－行</button>
+            <button type="button" class="md-btn" data-md="col-add" title="光标在表格内：右侧加一列">＋列</button>
+            <button type="button" class="md-btn" data-md="col-del" title="光标在表格内：删除光标所在列">－列</button>
+            <span class="md-spacer"></span>
+            <button type="button" class="md-btn md-preview-toggle" id="previewBtn" data-md="preview" title="预览 Markdown 渲染效果">👁 预览</button>
+          </div>
+          <textarea id="bodyInput" class="body-input" rows="8" aria-label="正文（Markdown）" placeholder="开始写点什么…（支持 Markdown）" spellcheck="false"></textarea>
+          <div id="mdPreview" class="md-preview" hidden></div>
+          <div class="attachment-bar">
+            <button id="imageBtn" class="ghost small" type="button" title="图片作为附件插入正文光标位置（自动压缩加密）">🖼 插入图片</button>
+            <button id="recordBtn" class="ghost small" type="button" title="录制语音">🎤 <span id="recordLabel">录音</span></button>
+            <span id="attachCount" class="muted tiny inline"></span>
+            <input id="imageInput" type="file" accept="image/*" multiple hidden>
+          </div>
+          <div id="attachmentList" class="attachment-list" aria-label="录音列表"></div>
+          <div class="editor-foot"><span id="saveState">已锁定</span></div>
+        </div>
       </div>
-      <div class="md-toolbar" id="mdToolbar" role="toolbar" aria-label="Markdown 排版工具">
-        <button type="button" class="md-btn" data-md="bold" title="加粗 **文字**"><b>B</b></button>
-        <button type="button" class="md-btn" data-md="italic" title="斜体 *文字*"><i>I</i></button>
-        <button type="button" class="md-btn" data-md="strike" title="删除线 ~~文字~~"><s>S</s></button>
-        <span class="md-sep"></span>
-        <button type="button" class="md-btn" data-md="h1" title="一级标题">H1</button>
-        <button type="button" class="md-btn" data-md="h2" title="二级标题">H2</button>
-        <button type="button" class="md-btn" data-md="h3" title="三级标题">H3</button>
-        <span class="md-sep"></span>
-        <button type="button" class="md-btn" data-md="ul" title="无序列表">•≡</button>
-        <button type="button" class="md-btn" data-md="ol" title="有序列表">1.≡</button>
-        <button type="button" class="md-btn" data-md="task" title="待办项 - [ ]">☑</button>
-        <span class="md-sep"></span>
-        <button type="button" class="md-btn" data-md="link" title="链接 [文字](网址)">🔗</button>
-        <button type="button" class="md-btn" data-md="quote" title="引用 &gt; 文字">❝</button>
-        <button type="button" class="md-btn" data-md="code" title="代码 `文字` / ```块```">&lt;/&gt;</button>
-        <button type="button" class="md-btn" data-md="hr" title="分隔线 ---">―</button>
-        <span class="md-sep"></span>
-        <button type="button" class="md-btn md-fs" data-md="fs-small" title="小号字（选中文字后点击；再点取消）">A<sub>s</sub></button>
-        <button type="button" class="md-btn md-fs" data-md="fs-large" title="大号字">A<sub>L</sub></button>
-        <button type="button" class="md-btn md-fs" data-md="fs-xlarge" title="特大号字">A<sub>XL</sub></button>
-        <span class="md-sep"></span>
-        <button type="button" class="md-btn" data-md="table" title="插入表格（选择行列数）">▦</button>
-        <button type="button" class="md-btn" data-md="row-add" title="光标在表格内：末尾加一行">＋行</button>
-        <button type="button" class="md-btn" data-md="row-del" title="光标在表格内：删除光标所在行">－行</button>
-        <button type="button" class="md-btn" data-md="col-add" title="光标在表格内：右侧加一列">＋列</button>
-        <button type="button" class="md-btn" data-md="col-del" title="光标在表格内：删除光标所在列">－列</button>
-        <span class="md-spacer"></span>
-        <button type="button" class="md-btn md-preview-toggle" id="previewBtn" data-md="preview" title="预览 Markdown 渲染效果">👁 预览</button>
-      </div>
-      <textarea id="bodyInput" class="body-input" rows="8" aria-label="正文（Markdown）" placeholder="开始写点什么…（支持 Markdown）" spellcheck="false"></textarea>
-      <div id="mdPreview" class="md-preview" hidden></div>
-      <div class="attachment-bar">
-        <button id="imageBtn" class="ghost small" type="button" title="图片作为附件插入正文光标位置（自动压缩加密）">🖼 插入图片</button>
-        <button id="recordBtn" class="ghost small" type="button" title="录制语音">🎤 <span id="recordLabel">录音</span></button>
-        <span id="attachCount" class="muted tiny inline"></span>
-        <input id="imageInput" type="file" accept="image/*" multiple hidden>
-      </div>
-      <div id="attachmentList" class="attachment-list" aria-label="录音列表"></div>
-      <div class="editor-foot"><span id="saveState">已锁定</span></div>
     </main>
   </div>
 
-  <dialog id="settingsDialog" aria-label="设置">
-    <h3>设置</h3>
-    <div class="settings-section">
-      <div class="settings-title">账户</div>
-      <label for="acctNameInput">账户名</label>
-      <input id="acctNameInput" type="text" placeholder="当前账户" autocomplete="username" autocapitalize="none" spellcheck="false">
-      <label for="acctCurrentInput">当前密码</label>
-      <input id="acctCurrentInput" type="password" placeholder="修改前必填" autocomplete="current-password">
-      <label for="acctNewInput">新密码（至少 8 位，留空表示不改）</label>
-      <input id="acctNewInput" type="password" placeholder="留空则不修改密码" autocomplete="new-password">
-      <label for="acctConfirmInput">确认新密码</label>
-      <input id="acctConfirmInput" type="password" placeholder="重复新密码" autocomplete="new-password">
-      <p id="acctError" class="lock-error" hidden></p>
-      <button id="saveAccount" class="primary" type="button" disabled>保存账户修改</button>
-      <p class="muted">账户名和密码可随时修改。密码同时用于解密便签：改密码时本机自动重新封装加密库，已有便签不受影响。保存后需重新登录。</p>
+  <!-- 设置：两级结构（左分类，右具体选项） -->
+  <dialog id="settingsDialog" class="settings-dialog" aria-label="设置">
+    <div class="settings-shell">
+      <nav class="settings-nav" aria-label="设置分类">
+        <button type="button" class="settings-nav-item active" data-settings-panel="account"><span>👤</span>账户</button>
+        <button type="button" class="settings-nav-item" data-settings-panel="sync"><span>↻</span>同步</button>
+        <button type="button" class="settings-nav-item" data-settings-panel="appearance"><span>◐</span>外观与编辑</button>
+        <button type="button" class="settings-nav-item" data-settings-panel="data"><span>▤</span>数据与备份</button>
+        <button type="button" class="settings-nav-item" data-settings-panel="about"><span>ⓘ</span>关于</button>
+      </nav>
+      <div class="settings-main">
+        <header class="settings-head">
+          <h3 id="settingsTitle">账户</h3>
+          <button id="settingsClose" class="icon-btn" type="button" aria-label="关闭设置">×</button>
+        </header>
+        <div class="settings-body">
+          <section class="settings-panel" data-panel="account">
+            <p class="settings-lead">账户名和密码可随时修改。密码同时用于解密便签：改密码时本机自动重新封装加密库，已有便签不受影响。</p>
+            <label for="acctNameInput">账户名</label>
+            <input id="acctNameInput" type="text" placeholder="当前账户" autocomplete="username" autocapitalize="none" spellcheck="false">
+            <label for="acctCurrentInput">当前密码</label>
+            <input id="acctCurrentInput" type="password" placeholder="修改前必填" autocomplete="current-password">
+            <label for="acctNewInput">新密码（至少 8 位，留空表示不改）</label>
+            <input id="acctNewInput" type="password" placeholder="留空则不修改密码" autocomplete="new-password">
+            <label for="acctConfirmInput">确认新密码</label>
+            <input id="acctConfirmInput" type="password" placeholder="重复新密码" autocomplete="new-password">
+            <p id="acctError" class="lock-error" hidden></p>
+            <button id="saveAccount" class="primary" type="button" disabled>保存账户修改</button>
+            <p class="muted">保存后旧会话立即失效，本机将用新账户自动重新登录。</p>
+          </section>
+          <section class="settings-panel" data-panel="sync" hidden>
+            <p class="settings-lead">离线修改先写入本机 IndexedDB（仅密文）。多端同时编辑按时间戳裁决，时间相同按设备标识裁决。</p>
+            <label for="deviceInput">设备标识（用于同步冲突裁决）</label>
+            <input id="deviceInput" type="text" placeholder="自动生成" autocomplete="off">
+            <label for="syncMode">同步方式</label>
+            <select id="syncMode">
+              <option value="auto">自动（编辑后、解锁、联网及定时同步）</option>
+              <option value="manual">手动（仅点击左侧「同步」按钮）</option>
+            </select>
+            <label for="syncInterval">自动同步间隔（秒）</label>
+            <input id="syncInterval" type="number" min="10" max="86400" step="10" value="60" inputmode="numeric">
+            <p class="muted">可填 10～86400 秒（10 秒～24 小时），仅「自动」模式生效。设置只保存在本机。</p>
+          </section>
+          <section class="settings-panel" data-panel="appearance" hidden>
+            <p class="settings-lead">外观设置只保存在本机，不影响便签内容。</p>
+            <label for="themeSelect">主题</label>
+            <select id="themeSelect">
+              <option value="light">浅色</option>
+              <option value="dark">深色</option>
+            </select>
+            <label for="editorFontSelect">编辑区字号</label>
+            <select id="editorFontSelect">
+              <option value="small">小</option>
+              <option value="normal">标准</option>
+              <option value="large">大</option>
+              <option value="xlarge">特大</option>
+            </select>
+            <label for="imageQuality">图片压缩强度</label>
+            <select id="imageQuality">
+              <option value="balanced">均衡（推荐，正文文字仍清晰）</option>
+              <option value="clear">清晰（体积更大）</option>
+              <option value="tiny">极小（小字可能变模糊）</option>
+            </select>
+            <label for="audioQuality">录音压缩强度</label>
+            <select id="audioQuality">
+              <option value="balanced">均衡（语音清晰，约 32 kbps）</option>
+              <option value="clear">清晰（约 64 kbps）</option>
+              <option value="tiny">极小（约 20 kbps）</option>
+            </select>
+            <p class="muted">压缩在浏览器内完成；修改后新插入的图片/录音生效，已存附件不变。</p>
+          </section>
+          <section class="settings-panel" data-panel="data" hidden>
+            <p class="settings-lead">导出文件为密文 JSON，含 KDF 参数与全部便签密文，不含明文。恢复时需要同一账户密码。</p>
+            <div class="dialog-actions start">
+              <button id="exportBtn" class="ghost" type="button">导出加密备份</button>
+              <button id="importBtn" class="ghost" type="button">导入备份</button>
+            </div>
+            <input id="importFile" type="file" accept="application/json,.json" hidden>
+            <p class="muted">导入会替换本机加密库与便签缓存，并触发一次同步；请提前导出当前备份。</p>
+          </section>
+          <section class="settings-panel" data-panel="about" hidden>
+            <div class="about-card">
+              <div class="lock-logo">签</div>
+              <h4>轻签 · NAS Notes</h4>
+              <p class="muted">端到端加密的轻量便签。服务端与本机数据库只保存密文，明文仅存在于解锁期间的内存中。</p>
+              <p class="muted">零第三方依赖、零外链；PWA 可离线使用，安卓壳仅为 WebView 容器。</p>
+            </div>
+          </section>
+        </div>
+        <footer class="settings-foot">
+          <button id="cancelSettings" class="ghost" type="button">取消</button>
+          <button id="saveSettings" class="primary" type="button">保存设置</button>
+        </footer>
+      </div>
     </div>
-    <label for="deviceInput">设备标识（用于同步冲突裁决）</label>
-    <input id="deviceInput" type="text" placeholder="自动生成" autocomplete="off">
+  </dialog>
 
-    <label for="syncMode">同步方式</label>
-    <select id="syncMode">
-      <option value="auto">自动（编辑后、解锁、联网及定时同步）</option>
-      <option value="manual">手动（仅点击左侧「同步」按钮）</option>
-    </select>
+  <!-- 便签列表右键 / 长按菜单 -->
+  <div id="noteContextMenu" class="context-menu" role="menu" hidden>
+    <button type="button" role="menuitem" data-action="open">✏️ 打开便签</button>
+    <button type="button" role="menuitem" data-action="folder">📁 调整分类…</button>
+    <button type="button" role="menuitem" data-action="delete" class="danger-item">🗑 删除便签</button>
+  </div>
 
-    <label for="syncInterval">自动同步间隔（秒）</label>
-    <input id="syncInterval" type="number" min="10" max="86400" step="10" value="60" inputmode="numeric">
-    <p class="muted">可填 10～86400 秒（10 秒～24 小时），仅「自动」模式生效。设置只保存在本机。</p>
-
-    <label for="imageQuality">图片压缩强度</label>
-    <select id="imageQuality">
-      <option value="balanced">均衡（推荐，正文文字仍清晰）</option>
-      <option value="clear">清晰（体积更大）</option>
-      <option value="tiny">极小（小字可能变模糊）</option>
-    </select>
-
-    <label for="audioQuality">录音压缩强度</label>
-    <select id="audioQuality">
-      <option value="balanced">均衡（语音清晰，约 32 kbps）</option>
-      <option value="clear">清晰（约 64 kbps）</option>
-      <option value="tiny">极小（约 20 kbps）</option>
-    </select>
-    <p class="muted">压缩在浏览器内完成，设置只保存在本机，不影响已存便签；修改后新插入的图片/录音生效。</p>
-
-    <hr>
-    <h4>加密备份</h4>
-    <p class="muted">导出文件为密文 JSON，含 KDF 参数与全部便签密文，不含明文。恢复时需要相同加密口令。</p>
+  <dialog id="tableDialog" class="compact-dialog" aria-label="插入表格">
+    <h3>插入表格</h3>
+    <label for="tableCols">列数（1～20）</label>
+    <input id="tableCols" type="number" min="1" max="20" step="1" value="3" inputmode="numeric">
+    <label for="tableRows">数据行数（不含表头，0～50）</label>
+    <input id="tableRows" type="number" min="0" max="50" step="1" value="2" inputmode="numeric">
     <div class="dialog-actions">
-      <button id="exportBtn" class="ghost" type="button">导出加密备份</button>
-      <button id="importBtn" class="ghost" type="button">导入备份</button>
+      <button id="tableCancel" class="ghost" type="button">取消</button>
+      <button id="tableInsert" class="primary" type="button">插入</button>
     </div>
-    <input id="importFile" type="file" accept="application/json,.json" hidden>
+  </dialog>
 
-    <p class="muted">离线修改先写入本机 IndexedDB（仅密文）。自动模式下联网后推送，手动模式下会一直保留到点击「同步」。多端同时编辑按时间戳裁决，时间相同按设备标识裁决。</p>
+  <dialog id="folderDialog" class="compact-dialog" aria-label="调整分类">
+    <h3 id="folderDialogTitle">调整分类</h3>
+    <label for="folderDialogSelect">选择分类</label>
+    <select id="folderDialogSelect"></select>
+    <label for="folderDialogNew" hidden>新分类名称</label>
+    <input id="folderDialogNew" type="text" maxlength="100" placeholder="分类名称" hidden autocomplete="off">
     <div class="dialog-actions">
-      <button id="cancelSettings" class="ghost" type="button">取消</button>
-      <button id="saveSettings" class="primary" type="button">保存</button>
+      <button id="folderDialogCancel" class="ghost" type="button">取消</button>
+      <button id="folderDialogSave" class="primary" type="button">确定</button>
+    </div>
+  </dialog>
+
+  <dialog id="textDialog" class="compact-dialog" aria-label="输入">
+    <h3 id="textDialogTitle">输入</h3>
+    <label for="textDialogInput">名称</label>
+    <input id="textDialogInput" type="text" maxlength="100" autocomplete="off">
+    <div class="dialog-actions">
+      <button id="textDialogCancel" class="ghost" type="button">取消</button>
+      <button id="textDialogOk" class="primary" type="button">确定</button>
+    </div>
+  </dialog>
+
+  <dialog id="confirmDialog" class="compact-dialog" aria-label="确认">
+    <h3 id="confirmTitle">确认操作</h3>
+    <p id="confirmMessage" class="muted"></p>
+    <div class="dialog-actions">
+      <button id="confirmCancel" class="ghost" type="button">取消</button>
+      <button id="confirmOk" class="danger" type="button">确定</button>
     </div>
   </dialog>
 
