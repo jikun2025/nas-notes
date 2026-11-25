@@ -33,25 +33,19 @@ def derive_credential(passphrase, salt_b64):
 
 
 def login(username, password):
-    s, b = req("GET", "/api/login-salt?username=" + urllib.parse.quote(username))
-    if s != 200:
-        return s, b
-    cred = derive_credential(password, b["salt"])
-    return req("POST", "/api/login", {"username": username, "credential": cred})
+    """普通账户登录：账户名 + 密码，与网页登录框完全一致。"""
+    return req("POST", "/api/login", {"username": username, "password": password})
 
 
 def change_password(token, username, current, new, vault=None, new_username=None):
-    s, b = req("GET", "/api/login-salt?username=" + urllib.parse.quote(username))
-    cur_cred = derive_credential(current, b["salt"]) if current else ""
-    new_salt = base64.b64encode(os.urandom(16)).decode()
-    body = {"current_credential": cur_cred}
+    body = {"current_password": current}
     if new_username:
         body["username"] = new_username
     if new:
-        body["new_credential"] = derive_credential(new, new_salt)
-        body["new_login_salt"] = new_salt
+        body["new_password"] = new
         body["vault"] = vault if vault is not None else {
-            "salt": new_salt, "wrapped": "bmV3d3JhcA==", "iterations": 310000, "version": 1
+            "salt": "bmV3c2FsdA==", "wrapped": "bmV3d3JhcA==",
+            "iterations": 310000, "version": 1
         }
     return req("PUT", "/api/account", body, token=token)
 
@@ -119,16 +113,14 @@ def main():
         s, b = req("GET", "/api/meta")
         check("meta 未登录 401", s == 401)
 
-        # ---- 默认账户 admin/admin 登录（credential 派生，口令不上线）----
+        # ---- 默认账户 admin/admin：普通账户名+密码登录 ----
         s, b = login("admin", "wrong")
-        check("错误口令 401", s == 401 and b.get("code") == "bad_credentials")
-        s, b = req("POST", "/api/login", {"username": "admin", "password": "admin"})
-        check("直接口令登录被拒 401", s == 401)
-        s, b = req("GET", "/api/login-salt?username=nosuchuser")
-        check("不存在账户也返回盐 200", s == 200 and bool(b.get("salt")))
+        check("错误密码 401", s == 401 and b.get("code") == "bad_credentials")
         s, b = login("admin", "admin")
-        check("默认账户登录 200", s == 200 and bool(b.get("token")))
+        check("默认账户密码登录 200", s == 200 and bool(b.get("token")))
         token = b.get("token", "")
+        s, b = req("GET", "/api/login-salt?username=nosuchuser")
+        check("旧版取盐接口兼容 200", s == 200 and bool(b.get("salt")))
 
         # ---- 会话令牌可用（X-Token 与 Bearer 皆可）----
         s, b = req("GET", "/api/meta", token=token)
@@ -167,23 +159,24 @@ def main():
                    token=token)
         check("笔记软删 200", s == 200 and b.get("note", {}).get("deleted") is True)
 
-        # ---- 账户改密（凭证哈希与 vault 包裹原子替换）----
+        # ---- 账户改名/改密（账户哈希与 vault 包裹原子替换）----
         new_vault = dict(v1, salt="bmV3c2FsdA==", wrapped="bmV3d3JhcA==")
         s, b = change_password(token, "admin", "wrong", "p@ssw0rd-1", vault=new_vault)
-        check("改密错误口令 403", s == 403)
-        s, b = req("GET", "/api/login-salt?username=admin")
-        cur_cred = derive_credential("admin", b["salt"])
+        check("改密错误当前密码 403", s == 403)
         s, b = req("PUT", "/api/account",
-                   {"current_credential": cur_cred,
-                    "new_credential": "x", "new_login_salt": "c2FsdA=="},
+                   {"current_password": "admin", "new_password": "p@ssw0rd-1"},
                    token=token)
         check("改密缺 vault 400", s == 400)
+        s, b = req("PUT", "/api/account",
+                   {"current_password": "admin", "new_password": "short", "vault": new_vault},
+                   token=token)
+        check("新密码过短 400", s == 400)
         s, b = change_password(token, "admin", "admin", "p@ssw0rd-1", vault=new_vault)
         check("改密+vault 200", s == 200 and b.get("username") == "admin")
         s, b = login("admin", "admin")
-        check("旧口令失效", s == 401)
+        check("旧密码失效", s == 401)
         s, b = login("admin", "p@ssw0rd-1")
-        check("新口令登录 200", s == 200 and bool(b.get("token")))
+        check("新密码登录 200", s == 200 and bool(b.get("token")))
         token2 = b.get("token", "")
         check("旧会话被撤销", req("GET", "/api/notes", token=token)[0] == 401)
         s, b = req("GET", "/api/meta", token=token2)

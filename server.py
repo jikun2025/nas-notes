@@ -114,6 +114,29 @@ def verify_password(password, stored):
         return False
 
 
+def verify_account_password(password, row):
+    """校验账户密码。
+
+    新账户：pass_hash = hash_password(密码)，直接校验明文密码（密码只在
+    内存里，服务端不落盘、不记日志）。旧账户：pass_hash 曾是
+    hash_password(PBKDF2(密码, login_salt))，兼容旧客户端继续登录。
+    """
+    if not password:
+        return False
+    if verify_password(password, row["pass_hash"]):
+        return True
+    salt_b64 = row["login_salt"] or ""
+    if not LOGIN_SALT_RE.fullmatch(salt_b64):
+        return False
+    try:
+        credential = base64.b64encode(hashlib.pbkdf2_hmac(
+            "sha256", password.encode("utf-8"), base64.b64decode(salt_b64), LOGIN_ITERS, 32
+        )).decode()
+    except (ValueError, TypeError):
+        return False
+    return verify_password(credential, row["pass_hash"])
+
+
 # ---------- 会话令牌 ----------
 
 def sweep_sessions(now):
@@ -230,17 +253,13 @@ def init_db():
             conn.execute("ALTER TABLE accounts ADD COLUMN login_salt TEXT NOT NULL DEFAULT ''")
         row = conn.execute("SELECT username FROM accounts").fetchone()
         if not row:
-            # 默认账户引导：服务端按客户端同一 KDF 规范，从默认口令算出
-            # 登录凭证（credential）再哈希入库——登录时客户端传的是
-            # PBKDF2(口令, login_salt, 100k)，口令明文从不离开客户端。
+            # 默认账户引导：密码按普通账户方式哈希后入库（PBKDF2 200k +
+            # 随机盐），明文不落盘、不记日志。login_salt 仅为兼容旧版
+            # 客户端的凭证派生留着，新登录流程不再依赖它。
             login_salt = base64.b64encode(secrets.token_bytes(16)).decode()
-            credential = base64.b64encode(hashlib.pbkdf2_hmac(
-                "sha256", DEFAULT_PASSWORD.encode("utf-8"),
-                base64.b64decode(login_salt), LOGIN_ITERS, 32
-            )).decode()
             conn.execute(
                 "INSERT INTO accounts (username, login_salt, pass_hash, updated_at) VALUES (?, ?, ?, ?)",
-                (DEFAULT_USERNAME, login_salt, hash_password(credential), now_iso()),
+                (DEFAULT_USERNAME, login_salt, hash_password(DEFAULT_PASSWORD), now_iso()),
             )
             if DEFAULT_PASSWORD == "admin":
                 print(
@@ -348,6 +367,7 @@ class Handler(BaseHTTPRequestHandler):
                 self._send_json(400, {"error": "invalid JSON"})
                 return
             username = str(payload.get("username") or "").strip()
+            password = str(payload.get("password") or "")
             credential = str(payload.get("credential") or "").strip()
             ip = self.client_address[0]
             if login_rate_limited(ip):
@@ -357,8 +377,8 @@ class Handler(BaseHTTPRequestHandler):
                 )
                 return
 
-            # credential = PBKDF2-SHA256(口令, login_salt, 100k)：由客户端
-            # 派生后上传，口令明文从不离开本机；服务端只存它的哈希。
+            # 普通账户登录：账户名 + 密码。密码只在内存里参与哈希校验，
+            # 不落盘、不记日志。credential 分支仅为旧版客户端过渡保留。
             def op(conn):
                 row = conn.execute(
                     "SELECT login_salt, pass_hash FROM accounts WHERE username = ?",
@@ -367,11 +387,10 @@ class Handler(BaseHTTPRequestHandler):
                 return row
 
             row = transaction(op)
-            if not row or not row["login_salt"] or not credential:
-                login_fail_record(ip)
-                self._send_json(401, {"error": "账户或口令不正确", "code": "bad_credentials"})
-                return
-            if not verify_password(credential, row["pass_hash"]):
+            ok = bool(row) and verify_account_password(password, row)
+            if not ok and row and credential:
+                ok = verify_password(credential, row["pass_hash"])
+            if not ok:
                 login_fail_record(ip)
                 # 统一提示，不区分“账户不存在”与“口令错误”
                 self._send_json(401, {"error": "账户或口令不正确", "code": "bad_credentials"})
@@ -510,8 +529,10 @@ class Handler(BaseHTTPRequestHandler):
             if payload is None:
                 self._send_json(400, {"error": "invalid JSON"})
                 return
+            current_password = str(payload.get("current_password") or "")
             current_credential = str(payload.get("current_credential") or "").strip()
             new_username = str(payload.get("username") or "").strip()
+            new_password = str(payload.get("new_password") or "")
             new_credential = str(payload.get("new_credential") or "").strip()
             new_login_salt = str(payload.get("new_login_salt") or "").strip()
             vault = payload.get("vault")
@@ -521,24 +542,31 @@ class Handler(BaseHTTPRequestHandler):
             ):
                 self._send_json(400, {"error": "vault parameters incomplete"})
                 return
+            if new_password and len(new_password) < 8:
+                self._send_json(400, {"error": "新口令至少 8 位"})
+                return
             if new_credential:
-                # 改口令必须同时带新盐与新的 vault 包裹，缺一拒绝，
-                # 防止“登录口令换了但加密库包裹还是旧口令派生”。
+                # 旧版客户端过渡分支：凭证仍须配新盐。
                 if not LOGIN_SALT_RE.fullmatch(new_login_salt):
                     self._send_json(400, {"error": "缺少有效的 new_login_salt"})
                     return
-                if vault is None:
-                    self._send_json(400, {"error": "改口令必须同时提交新的 vault 包裹"})
-                    return
+            if (new_password or new_credential) and vault is None:
+                # 改口令必须同时带新的 vault 包裹，防止“账户口令换了但
+                # 加密库包裹还是旧口令派生”导致笔记无法解密。
+                self._send_json(400, {"error": "改口令必须同时提交新的 vault 包裹"})
+                return
 
             def op_account(conn):
                 row = conn.execute(
                     "SELECT username, login_salt, pass_hash FROM accounts WHERE username = ?",
                     (user,),
                 ).fetchone()
-                if not row or not row["login_salt"] or not current_credential:
+                if not row:
                     return 403, {"error": "当前口令不正确"}
-                if not verify_password(current_credential, row["pass_hash"]):
+                current_ok = verify_account_password(current_password, row)
+                if not current_ok and current_credential:
+                    current_ok = verify_password(current_credential, row["pass_hash"])
+                if not current_ok:
                     return 403, {"error": "当前口令不正确"}
                 target_username = new_username or row["username"]
                 if new_username and not USERNAME_RE.fullmatch(new_username):
@@ -549,10 +577,15 @@ class Handler(BaseHTTPRequestHandler):
                     ).fetchone()
                     if clash:
                         return 409, {"error": "该账户名已被使用"}
-                login_salt = new_login_salt or row["login_salt"]
-                pass_hash = (
-                    hash_password(new_credential) if new_credential else row["pass_hash"]
-                )
+                if new_password:
+                    login_salt = new_login_salt or row["login_salt"]
+                    pass_hash = hash_password(new_password)
+                elif new_credential:
+                    login_salt = new_login_salt
+                    pass_hash = hash_password(new_credential)
+                else:
+                    login_salt = row["login_salt"]
+                    pass_hash = row["pass_hash"]
                 conn.execute(
                     "INSERT OR REPLACE INTO accounts (username, login_salt, pass_hash, updated_at) VALUES (?, ?, ?, ?)",
                     (target_username, login_salt, pass_hash, now_iso()),
@@ -562,7 +595,7 @@ class Handler(BaseHTTPRequestHandler):
                 # 改口令时用同一个事务原子替换 vault 包裹层——账户哈希与新
                 # wrapped 要么同时生效要么都不生效，杜绝“口令已换但加密库
                 # 还是旧包裹”导致笔记解不开的半程状态。
-                if vault is not None and new_credential:
+                if vault is not None and (new_password or new_credential):
                     value = {
                         "salt": str(vault["salt"])[:256],
                         "wrapped": str(vault["wrapped"])[:2048],

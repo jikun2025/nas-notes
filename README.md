@@ -24,7 +24,7 @@
    docker compose up -d --build
    ```
 
-3. 浏览器打开 `http://NAS_IP:28080`，用默认账户 **admin / admin** 登录（可在 `.env` 里用 `NOTES_USER` / `NOTES_PASS` 指定初始账户，仅首次建库时生效）。登录后立即在页面右下角「设置」里修改账户口令——登录口令同时用于解锁加密库。（宿主端口为 28080——NAS 上 8080 已被 reader 容器占用；容器内仍是 8080。）
+3. 浏览器打开 `http://NAS_IP:28080`，像普通服务一样用默认账户名 **admin**、密码 **admin** 登录（可在 `.env` 里用 `NOTES_USER` / `NOTES_PASS` 指定初始账户，仅首次建库时生效）。登录后立即在「设置」里修改账户名和密码——密码同时用于解锁加密库。（宿主端口为 28080——NAS 上 8080 已被 reader 容器占用；容器内仍是 8080。）
 4. 首次进入会要求创建加密库（或自动迁移旧版加密库），确认后即可使用。
 
 飞牛 NAS 用户也可以使用图形界面：Docker → Compose → 新增项目 → 项目路径选择该目录 → 创建项目。
@@ -70,12 +70,12 @@ gradle assembleRelease
 | localStorage | 会话令牌（服务端签发、重启失效）、设备标识、压缩档位、同步方式与间隔（不存口令） |
 | 浏览器内存 | 解锁期间的 wkey/CryptoKey 与明文便签 Map；锁定/刷新/关闭页面即清除 |
 
-- **账户口令不上传**：登录时浏览器把口令经 PBKDF2（100,000 次迭代、服务端下发的 login_salt）展开成凭证再发送，服务端只见凭证、再对凭证做一层哈希；口令明文从不离开本机。
-- 加密库用随机 wkey（AES-256-GCM）加密便签；wkey 由 `AES-GCM(KDF(口令, salt, 310k), wkey)` 包裹存入 vault.wrapped。修改口令只换包裹层，wkey 不变、笔记密文无需重加密。服务端解不开 wkey，就无法解密任何笔记。
-- 登录口令丢失：在登录页「清空加密库重新开始」可重建账户与加密库（会丢失全部便签密文）；也可用加密备份恢复。
+- **普通账户登录**：登录框只有账户名和密码（默认 admin/admin），不依赖 WebCrypto 或弹窗，局域网 HTTP 与安卓 WebView 下都能稳定登录。服务端把密码用 PBKDF2（200,000 次迭代 + 随机盐）哈希后入库，明文不落盘、不进日志。
+- 加密库用随机 wkey（AES-256-GCM）加密便签；wkey 由 `AES-GCM(KDF(密码, salt, 310k), wkey)` 包裹存入 vault.wrapped。修改密码只换包裹层，wkey 不变、笔记密文无需重加密。服务端解不开 wkey，就无法解密任何笔记。
+- 密码丢失：在登录页「清空加密库重新开始」可重建加密库（会丢失全部便签密文）；也可用加密备份恢复。
 - 登录失败按 IP 限速（60 秒内 8 次失败即临时封禁 429）；改名/改密后旧会话令牌全部撤销。
-- **口令丢失且无备份时无法恢复数据**；请写入密码管理器并单独保存加密备份。
-- 从「口令直加密」的旧版加密库升级时，首次解锁会自动迁移：本机用旧口令解密全部便签、生成随机 wkey 重加密、原子替换服务端 vault 包裹。若旧版加密口令与登录口令不同，解锁时会提示补问一次。升级时还会自动删除旧版可能存过明文的 SQLite 表并打印警告。
+- **密码丢失且无备份时无法恢复数据**；请写入密码管理器并单独保存加密备份。
+- 从「口令直加密」的旧版加密库升级时，首次解锁会尝试用登录密码静默迁移：本机解密全部便签、生成随机 wkey 重加密、原子替换服务端 vault 包裹；迁移不弹 `window.prompt`（安卓 WebView 默认不支持）。升级时还会自动删除旧版可能存过明文的 SQLite 表并打印警告。
 
 ### 图片与录音
 
@@ -142,10 +142,10 @@ Web UI →「设置」→「加密备份」：
 | --- | --- | --- |
 | GET | `/api/health` | 健康检查（无需令牌） |
 | GET | `/api/login-salt?username=` | 取登录盐与迭代数（无需令牌；未知账户返回随机盐防枚举） |
-| POST | `/api/login` | `{username, credential}` 登录，返回会话令牌（24h TTL，服务重启失效） |
+| POST | `/api/login` | `{username, password}` 登录，返回会话令牌（24h TTL，服务重启失效；仍兼容旧版 `credential` 字段） |
 | POST | `/api/logout` | 注销当前会话 |
 | GET | `/api/account` | 当前账户名 |
-| PUT | `/api/account` | 改名/改密（`current_credential` + `new_credential`/`new_login_salt` + 改密时必带重包裹 `vault`，同事务原子替换，成功后撤销全部旧会话） |
+| PUT | `/api/account` | 改名/改密（`current_password` + 可选 `new_password` + 改密时必带重包裹 `vault`，同事务原子替换，成功后撤销全部旧会话；仍兼容旧版 credential 字段） |
 | GET | `/api/meta` | 读取加密库参数（salt/wrapped/iterations/version） |
 | PUT | `/api/meta` | 初始化加密库（只允许一次，已初始化返回 409；`replace:true` 用于旧库迁移替换） |
 | DELETE | `/api/vault` | `{"confirm":"RESET"}` 清空加密库与全部密文（口令丢失逃生口） |
@@ -163,7 +163,7 @@ Web UI →「设置」→「加密备份」：
 | `DATA_DIR` | `/data` | 数据库目录 |
 | `STATIC_DIR` | 同级 `static/` | 前端静态文件目录 |
 | `NOTES_USER` | `admin` | 初始账户名（仅首次建库时生效） |
-| `NOTES_PASS` | `admin` | 初始口令（仅首次建库时生效，登录后请立即在「设置」中修改） |
+| `NOTES_PASS` | `admin` | 初始密码（仅首次建库时生效，登录后请立即在「设置」中修改） |
 
 ## 开发与测试
 

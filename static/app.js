@@ -355,19 +355,6 @@ async function deriveKey(passphrase, saltB64, iterations) {
   );
 }
 
-// 登录凭证 credential = PBKDF2-SHA256(口令, login_salt, 100k)：口令明文
-// 从不离开本机，服务端只见到凭证、再对凭证做一层哈希。
-async function deriveCredential(passphrase, saltB64, iterations) {
-  const material = await crypto.subtle.importKey(
-    'raw', encoder.encode(passphrase), 'PBKDF2', false, ['deriveKey', 'deriveBits']
-  );
-  const bits = await crypto.subtle.deriveBits(
-    { name: 'PBKDF2', salt: b64ToBytes(saltB64), iterations, hash: 'SHA-256' },
-    material, 256
-  );
-  return bytesToB64(new Uint8Array(bits));
-}
-
 async function encryptJSON(key, value) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
   const cipher = await crypto.subtle.encrypt(
@@ -872,8 +859,8 @@ function showLockScreen(mode) {
   els.lockScreen.hidden = false;
   els.lockTitle.textContent = '登录轻签';
   els.lockHint.textContent = initMode
-    ? '输入账户与登录口令。首次登录后本机将创建加密库；口令只在内存中用于解密，服务器看不到明文。'
-    : '输入账户与登录口令解锁。口令只在本机内存中用于解密，服务器看不到明文。';
+    ? '输入账户名和密码（默认 admin / admin）。首次登录后本机自动创建加密库。'
+    : '输入账户名和密码解锁。密码只在内存中用于解密，服务器上只存哈希和密文。';
   els.confirmLabel.hidden = true;
   els.confirmInput.hidden = true;
   els.unlockBtn.textContent = '登录';
@@ -890,17 +877,13 @@ function showLockError(message) {
   els.lockError.hidden = false;
 }
 
-// 登录一步到位：取盐 → 本机派生凭证 → POST /api/login → 会话令牌。
-// 返回 true 表示已拿到会话（口令正确）。
-async function loginAccount(username, passphrase) {
-  const saltResp = await fetch('/api/login-salt?username=' + encodeURIComponent(username));
-  if (!saltResp.ok) throw new Error('无法获取登录参数: HTTP ' + saltResp.status);
-  const saltInfo = await saltResp.json();
-  const credential = await deriveCredential(passphrase, saltInfo.salt, saltInfo.iterations || 100000);
+// 普通账户登录：账户名 + 密码 → 服务端校验（哈希入库）→ 会话令牌。
+// 不依赖 WebCrypto：局域网 HTTP / 安卓 WebView 下也能稳定登录。
+async function loginAccount(username, password) {
   const resp = await fetch('/api/login', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ username, credential })
+    body: JSON.stringify({ username, password })
   });
   if (resp.status === 401) return null;
   if (resp.status === 429) {
@@ -984,18 +967,13 @@ async function handleUnlock() {
     if (!key) {
       if (vaultMeta.legacy) {
         // 旧版加密库（口令派生密钥直接加密笔记，无 wkey 包裹）：
-        // 先用登录口令校验旧库；不一致时补问一次旧版“加密口令”
-        // （旧版登录令牌与加密口令分离，口令可能不同）。
-        let legacyKey = await deriveKey(passphrase, vaultMeta.salt, vaultMeta.iterations);
+        // 只用登录密码静默校验/迁移，绝不弹 prompt（安卓 WebView
+        // 默认不支持 window.prompt，会把登录卡死）。
+        const legacyKey = await deriveKey(passphrase, vaultMeta.salt, vaultMeta.iterations);
         if (!(await checkLegacyVerifier(legacyKey, vaultMeta.verifier))) {
-          const asked = window.prompt('检测到旧版加密库。请输入升级前锁屏里输入的加密口令（留空则放弃迁移）：');
-          if (!asked) return showLockError('需要旧版加密口令才能迁移数据；也可在登录页“清空加密库重新开始”');
-          legacyKey = await deriveKey(asked, vaultMeta.salt, vaultMeta.iterations);
-          if (!(await checkLegacyVerifier(legacyKey, vaultMeta.verifier))) {
-            return showLockError('旧版加密口令不正确，无法迁移。可重试或“清空加密库重新开始”（会丢失数据）');
-          }
+          return showLockError('旧加密库需要用升级前的加密口令迁移；请在登录页用「清空加密库重新开始」重建');
         }
-        // 迁移后统一用当前登录口令包裹（新旧口令就此并轨）
+        // 迁移后统一用当前登录密码包裹（新旧口令就此并轨）
         key = await migrateLegacyVault(legacyKey, passphrase);
       } else {
         const wrapKey = await deriveKey(passphrase, vaultMeta.salt, vaultMeta.iterations);
@@ -1691,21 +1669,15 @@ els.saveAccount.addEventListener('click', async () => {
   }
   els.saveAccount.disabled = true;
   try {
-    // 当前口令 → 当前 login_salt → current_credential
-    const saltResp = await fetch('/api/login-salt?username=' + encodeURIComponent(currentName));
-    if (!saltResp.ok) throw new Error('无法获取登录参数');
-    const saltInfo = await saltResp.json();
-    const currentCredential = await deriveCredential(currentPass, saltInfo.salt, saltInfo.iterations || 100000);
-
-    const body = { username: targetName || currentName, current_credential: currentCredential };
+    // 普通账户校验：当前密码交给服务端按哈希核对，不做客户端派生。
+    const body = {
+      username: targetName || currentName,
+      current_password: currentPass
+    };
 
     if (newPass) {
-      // 新 login_salt（随机）→ new_credential；同时用新口令重包裹 wkey
-      const newLoginSaltBytes = crypto.getRandomValues(new Uint8Array(16));
-      const newLoginSalt = bytesToB64(newLoginSaltBytes);
-      body.new_credential = await deriveCredential(newPass, newLoginSalt, saltInfo.iterations || 100000);
-      body.new_login_salt = newLoginSalt;
-
+      body.new_password = newPass;
+      // 用新密码重新包裹 wkey：笔记密文不变，只换包裹层。
       const newWrapSalt = bytesToB64(crypto.getRandomValues(new Uint8Array(16)));
       const newWrapKey = await deriveKey(newPass, newWrapSalt, PBKDF2_ITERATIONS);
       body.vault = {

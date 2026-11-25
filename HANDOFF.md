@@ -17,7 +17,7 @@ Windows Git Bash，在仓库根目录执行：
 PORT=18767 DATA_DIR=/tmp/nas-notes-local STATIC_DIR="$PWD/static" python server.py
 ```
 
-`server.py` 默认 `DATA_DIR=/data`，本地必须覆盖。默认账户 admin / admin（`NOTES_USER`/`NOTES_PASS` 可覆盖初始账户，仅首次建库生效）；首次登录后在网页「设置」中改口令，登录口令同时用于解锁加密库。
+`server.py` 默认 `DATA_DIR=/data`，本地必须覆盖。默认账户名 admin、密码 admin（`NOTES_USER`/`NOTES_PASS` 可覆盖初始账户，仅首次建库生效）；登录就是普通账户名+密码，首次登录后可在网页「设置」中改名改密码，密码同时用于解锁加密库。
 
 ## 接手提示词
 
@@ -44,4 +44,4 @@ node tools/test_legacy_migration.js    # 旧库→wkey 包裹 端到端迁移 16
 node tools/test_md_table_fs.js         # Markdown 表格/字号渲染 22 项
 ```
 
-再测登录（login-salt→credential）、`/api/meta` 初始化、便签密文写入读回、锁定/解锁后搜索。详细文档见 `README.md` 与 `SECURITY.md`。
+再测登录（账户名+密码）、`/api/meta` 初始化、便签密文写入读回、设置里改名改密、锁定/解锁后搜索。详细文档见 `README.md` 与 `SECURITY.md`。

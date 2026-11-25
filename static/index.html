@@ -15,16 +15,16 @@
     <div class="lock-card">
       <div class="lock-logo">轻签</div>
       <h1 id="lockTitle">登录轻签</h1>
-      <p id="lockHint" class="muted">输入账户与登录口令解锁。口令只在本机内存中用于解密，服务器看不到明文。</p>
-      <label for="usernameInput">账户</label>
+      <p id="lockHint" class="muted">输入账户名和密码（默认 admin / admin）登录。密码只在本机内存中用于解密，服务器只存哈希和密文。</p>
+      <label for="usernameInput">账户名</label>
       <input id="usernameInput" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="默认 admin">
-      <label id="passphraseLabel" for="passphraseInput">登录口令</label>
-      <input id="passphraseInput" type="password" autocomplete="current-password" placeholder="输入口令">
-      <label id="confirmLabel" for="confirmInput" hidden>再次输入口令</label>
-      <input id="confirmInput" type="password" autocomplete="new-password" placeholder="重复口令" hidden>
+      <label id="passphraseLabel" for="passphraseInput">密码</label>
+      <input id="passphraseInput" type="password" autocomplete="current-password" placeholder="默认 admin">
+      <label id="confirmLabel" for="confirmInput" hidden>再次输入密码</label>
+      <input id="confirmInput" type="password" autocomplete="new-password" placeholder="重复密码" hidden>
       <p id="lockError" class="lock-error" hidden></p>
       <button id="unlockBtn" class="primary block" type="button">登录</button>
-      <p class="muted tiny">口令丢失无法恢复。忘记口令？<button id="resetVaultBtn" class="linkbtn" type="button">清空加密库重新开始</button></p>
+      <p class="muted tiny">密码丢失无法恢复。忘记密码？<button id="resetVaultBtn" class="linkbtn" type="button">清空加密库重新开始</button></p>
     </div>
   </div>
 
@@ -112,15 +112,15 @@
       <div class="settings-title">账户</div>
       <label for="acctNameInput">账户名</label>
       <input id="acctNameInput" type="text" placeholder="当前账户" autocomplete="username" autocapitalize="none" spellcheck="false">
-      <label for="acctCurrentInput">当前口令</label>
+      <label for="acctCurrentInput">当前密码</label>
       <input id="acctCurrentInput" type="password" placeholder="修改前必填" autocomplete="current-password">
-      <label for="acctNewInput">新口令（至少 8 位，留空表示不改）</label>
-      <input id="acctNewInput" type="password" placeholder="留空则不修改口令" autocomplete="new-password">
-      <label for="acctConfirmInput">确认新口令</label>
-      <input id="acctConfirmInput" type="password" placeholder="重复新口令" autocomplete="new-password">
+      <label for="acctNewInput">新密码（至少 8 位，留空表示不改）</label>
+      <input id="acctNewInput" type="password" placeholder="留空则不修改密码" autocomplete="new-password">
+      <label for="acctConfirmInput">确认新密码</label>
+      <input id="acctConfirmInput" type="password" placeholder="重复新密码" autocomplete="new-password">
       <p id="acctError" class="lock-error" hidden></p>
       <button id="saveAccount" class="primary" type="button" disabled>保存账户修改</button>
-      <p class="muted">登录口令同时用于解密便签：改口令时本机自动重新封装加密库，已有便签不受影响。保存后需重新登录。</p>
+      <p class="muted">账户名和密码可随时修改。密码同时用于解密便签：改密码时本机自动重新封装加密库，已有便签不受影响。保存后需重新登录。</p>
     </div>
     <label for="deviceInput">设备标识（用于同步冲突裁决）</label>
     <input id="deviceInput" type="text" placeholder="自动生成" autocomplete="off">

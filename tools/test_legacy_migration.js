@@ -121,12 +121,9 @@ async function req(method, urlPath, body, token) {
   return { status: res.status, body: json };
 }
 
-async function loginCredential(passphrase) {
-  const s = await req('GET', '/api/login-salt?username=admin');
-  return {
-    saltB64: s.body.salt,
-    credential: b64(I.pbkdf2(enc.encode(passphrase), unb64(s.body.salt), s.body.iterations || LOGIN_ITERS, 32)),
-  };
+// 新登录流程：账户名 + 密码（不再需要取盐/派生凭证）。
+function loginFields(passphrase) {
+  return { username: 'admin', password: passphrase };
 }
 
 (async () => {
@@ -141,8 +138,7 @@ async function loginCredential(passphrase) {
   if (!up) throw new Error('server did not start');
 
   // ---- 前端 handleUnlock 序列 ----
-  const lg = await loginCredential(NEW_LOGIN_PASS);
-  let r = await req('POST', '/api/login', { username: 'admin', credential: lg.credential });
+  let r = await req('POST', '/api/login', loginFields(NEW_LOGIN_PASS));
   ok('登录 admin/admin 200', r.status === 200 && Boolean(r.body.token));
   const token = r.body.token || '';
 
@@ -162,7 +158,7 @@ async function loginCredential(passphrase) {
   const keyLogin = deriveKeyBytes(NEW_LOGIN_PASS, meta.salt, meta.iterations);
   let loginDeriveFails = false;
   try { gcmOpen(keyLogin, ...meta.verifier.split(':')); } catch (e) { loginDeriveFails = true; }
-  ok('登录口令≠旧库口令时校验失败（走补问分支）', loginDeriveFails);
+  ok('登录密码≠旧库口令时校验失败（不弹 prompt）', loginDeriveFails);
 
   // migrateLegacyVault：新 salt+wrapKey(登录口令)+wkey → replace 替换 vault
   const migSaltB64 = b64(nodeCrypto.randomBytes(16));
@@ -197,16 +193,12 @@ async function loginCredential(passphrase) {
   ok('迁移后 wkey 解密正文一致', migrated.title === '旧便签' && migrated.body === notePlain.body);
 
   // ---- saveAccount 改密序列（账户哈希 + 包裹原子替换） ----
-  const newLoginSaltB64 = b64(nodeCrypto.randomBytes(16));
-  const newCredential = b64(I.pbkdf2(enc.encode(NEW_PASS_AFTER), unb64(newLoginSaltB64), LOGIN_ITERS, 32));
   const newWrapSaltB64 = b64(nodeCrypto.randomBytes(16));
   const newWrapKey = deriveKeyBytes(NEW_PASS_AFTER, newWrapSaltB64, PBKDF2_ITER);
-  const cur = await loginCredential(NEW_LOGIN_PASS);
   r = await req('PUT', '/api/account', {
     username: 'admin',
-    current_credential: cur.credential,
-    new_credential: newCredential,
-    new_login_salt: newLoginSaltB64,
+    current_password: NEW_LOGIN_PASS,
+    new_password: NEW_PASS_AFTER,
     vault: {
       salt: newWrapSaltB64, wrapped: wrapVaultB64(newWrapKey, wkey),
       iterations: PBKDF2_ITER, version: 1,
@@ -216,8 +208,7 @@ async function loginCredential(passphrase) {
   ok('改密后旧会话被撤销', (await req('GET', '/api/meta', undefined, token)).status === 401);
 
   // 新口令登录 → 解包 → 解笔记（wkey 不变，笔记密文无需再动）
-  const lg2 = await loginCredential(NEW_PASS_AFTER);
-  r = await req('POST', '/api/login', { username: 'admin', credential: lg2.credential });
+  r = await req('POST', '/api/login', loginFields(NEW_PASS_AFTER));
   ok('新口令登录 200', r.status === 200 && Boolean(r.body.token));
   const token3 = r.body.token || '';
   meta = (await req('GET', '/api/meta', undefined, token3)).body;
@@ -229,8 +220,7 @@ async function loginCredential(passphrase) {
   ok('改密后笔记依然可解密', finalPlain.body === notePlain.body);
 
   // 旧口令登录应失效
-  const lgOld = await loginCredential(NEW_LOGIN_PASS);
-  ok('旧口令登录失效', (await req('POST', '/api/login', { username: 'admin', credential: lgOld.credential })).status === 401);
+  ok('旧口令登录失效', (await req('POST', '/api/login', loginFields(NEW_LOGIN_PASS))).status === 401);
 })()
   .catch((e) => { fail++; console.error('  FATAL ' + (e && e.stack || e)); })
   .finally(() => {
