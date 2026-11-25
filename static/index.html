@@ -34,7 +34,7 @@
       </header>
 
       <div class="search-wrap">
-        <input id="searchInput" type="search" placeholder="全局搜索：标题 + 正文" autocomplete="off" spellcheck="false">
+        <input id="searchInput" type="search" placeholder="全局搜索：标题 + 正文 + 分类" autocomplete="off" spellcheck="false">
         <span class="hint" id="searchCount"></span>
       </div>
 
@@ -54,9 +54,37 @@
         <button id="deleteBtn" class="danger" type="button" hidden>删除</button>
       </div>
       <input id="titleInput" class="title-input" type="text" maxlength="200" placeholder="标题" aria-label="标题">
-      <div id="bodyInput" class="body-input" contenteditable="true" role="textbox" aria-multiline="true" aria-label="正文" data-placeholder="开始写点什么…"></div>
+      <div class="folder-row">
+        <span class="folder-label">分类</span>
+        <select id="folderSelect" class="folder-select" aria-label="便签分类"></select>
+        <button id="newFolderBtn" class="ghost small" type="button" title="新建分类">＋分类</button>
+        <button id="renameFolderBtn" class="ghost small" type="button" title="重命名当前分类" hidden>改名</button>
+        <button id="deleteFolderBtn" class="ghost small" type="button" title="删除当前分类（其中便签移入未分类）" hidden>删分类</button>
+      </div>
+      <div class="md-toolbar" id="mdToolbar" role="toolbar" aria-label="Markdown 排版工具">
+        <button type="button" class="md-btn" data-md="bold" title="加粗 **文字**"><b>B</b></button>
+        <button type="button" class="md-btn" data-md="italic" title="斜体 *文字*"><i>I</i></button>
+        <button type="button" class="md-btn" data-md="strike" title="删除线 ~~文字~~"><s>S</s></button>
+        <span class="md-sep"></span>
+        <button type="button" class="md-btn" data-md="h1" title="一级标题">H1</button>
+        <button type="button" class="md-btn" data-md="h2" title="二级标题">H2</button>
+        <button type="button" class="md-btn" data-md="h3" title="三级标题">H3</button>
+        <span class="md-sep"></span>
+        <button type="button" class="md-btn" data-md="ul" title="无序列表">•≡</button>
+        <button type="button" class="md-btn" data-md="ol" title="有序列表">1.≡</button>
+        <button type="button" class="md-btn" data-md="task" title="待办项 - [ ]">☑</button>
+        <span class="md-sep"></span>
+        <button type="button" class="md-btn" data-md="link" title="链接 [文字](网址)">🔗</button>
+        <button type="button" class="md-btn" data-md="quote" title="引用 &gt; 文字">❝</button>
+        <button type="button" class="md-btn" data-md="code" title="代码 `文字` / ```块```">&lt;/&gt;</button>
+        <button type="button" class="md-btn" data-md="hr" title="分隔线 ---">―</button>
+        <span class="md-spacer"></span>
+        <button type="button" class="md-btn md-preview-toggle" id="previewBtn" data-md="preview" title="预览 Markdown 渲染效果">👁 预览</button>
+      </div>
+      <textarea id="bodyInput" class="body-input" rows="8" aria-label="正文（Markdown）" placeholder="开始写点什么…（支持 Markdown）" spellcheck="false"></textarea>
+      <div id="mdPreview" class="md-preview" hidden></div>
       <div class="attachment-bar">
-        <button id="imageBtn" class="ghost small" type="button" title="图片插入正文光标位置（自动压缩加密）">🖼 在正文中插入图片</button>
+        <button id="imageBtn" class="ghost small" type="button" title="图片作为附件插入正文光标位置（自动压缩加密）">🖼 插入图片</button>
         <button id="recordBtn" class="ghost small" type="button" title="录制语音">🎤 <span id="recordLabel">录音</span></button>
         <span id="attachCount" class="muted tiny inline"></span>
         <input id="imageInput" type="file" accept="image/*" multiple hidden>
@@ -115,6 +143,7 @@
   </dialog>
 
   <div id="toast" class="toast" hidden></div>
+  <script src="/md.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

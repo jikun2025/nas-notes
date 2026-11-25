@@ -75,6 +75,14 @@ const els = {
   editorMeta: document.getElementById('editorMeta'),
   titleInput: document.getElementById('titleInput'),
   bodyInput: document.getElementById('bodyInput'),
+  mdToolbar: document.getElementById('mdToolbar'),
+  previewBtn: document.getElementById('previewBtn'),
+  mdPreview: document.getElementById('mdPreview'),
+  folderRow: document.querySelector('.folder-row'),
+  folderSelect: document.getElementById('folderSelect'),
+  newFolderBtn: document.getElementById('newFolderBtn'),
+  renameFolderBtn: document.getElementById('renameFolderBtn'),
+  deleteFolderBtn: document.getElementById('deleteFolderBtn'),
   saveState: document.getElementById('saveState'),
   imageBtn: document.getElementById('imageBtn'),
   imageInput: document.getElementById('imageInput'),
@@ -143,104 +151,49 @@ function esc(value) {
 }
 
 const INLINE_IMG_RE = /^data:(image\/(?:jpeg|png|webp|gif));base64,([A-Za-z0-9+/=]+)$/i;
-const BODY_CONTAINER_TAGS = new Set([
-  'div', 'p', 'span', 'b', 'strong', 'i', 'em', 'u', 'ul', 'ol', 'li', 'blockquote', 'figcaption'
-]);
-
-function textToBodyHTML(text) {
-  return esc(String(text || '')).replace(/\r?\n/g, '<br>');
-}
-
-function inlineFigureHTML(mime, data, name) {
-  const safeMime = /^image\/(?:jpeg|png|webp|gif)$/i.test(String(mime || ''))
-    ? String(mime).toLowerCase() : 'image/jpeg';
-  const safeData = String(data || '').replace(/[^A-Za-z0-9+/=]/g, '');
-  const label = esc(name || '图片');
-  if (!safeData) return '';
-  return '<figure class="inline-image" contenteditable="false">' +
-    '<img src="data:' + safeMime + ';base64,' + safeData + '" alt="' + label + '" data-inline-image="1">' +
-    '<figcaption>' + label + '</figcaption>' +
-    '<button type="button" class="inline-remove" data-remove-inline="1" title="删除图片">✕</button>' +
-    '</figure><div><br></div>';
-}
-
-function sanitizeBodyHTML(html) {
-  const source = String(html || '');
-  if (!source) return '';
-  let doc;
-  try {
-    doc = new DOMParser().parseFromString('<div id="nn-root">' + source + '</div>', 'text/html');
-  } catch (error) {
-    return textToBodyHTML(source.replace(/<[^>]*>/g, ''));
-  }
-  const root = doc.getElementById('nn-root');
-  if (!root) return '';
-  const output = [];
-  const render = (node, sink) => {
-    if (node.nodeType === 3) { sink.push(esc(node.nodeValue || '')); return; }
-    if (node.nodeType !== 1) return;
-    const tag = node.tagName.toLowerCase();
-    if (['script', 'style', 'iframe', 'object', 'embed', 'link', 'meta'].includes(tag)) return;
-    if (tag === 'br') { sink.push('<br>'); return; }
-    if (tag === 'img') {
-      const match = INLINE_IMG_RE.exec(node.getAttribute('src') || '');
-      if (match) {
-        sink.push('<img src="data:' + match[1] + ';base64,' + match[2] +
-          '" alt="' + esc(node.getAttribute('alt') || '图片') + '" data-inline-image="1">');
-      }
-      return;
-    }
-    if (tag === 'figure' && node.classList.contains('inline-image')) {
-      const img = node.querySelector('img');
-      const match = img && INLINE_IMG_RE.exec(img.getAttribute('src') || '');
-      if (!match) return;
-      const caption = node.querySelector('figcaption');
-      const label = esc((caption && caption.textContent) || img.getAttribute('alt') || '图片');
-      sink.push('<figure class="inline-image" contenteditable="false">' +
-        '<img src="data:' + match[1] + ';base64,' + match[2] + '" alt="' + label +
-        '" data-inline-image="1"><figcaption>' + label + '</figcaption>' +
-        '<button type="button" class="inline-remove" data-remove-inline="1" title="删除图片">✕</button>' +
-        '</figure>');
-      return;
-    }
-    const children = [];
-    Array.from(node.childNodes).forEach((child) => render(child, children));
-    if (BODY_CONTAINER_TAGS.has(tag)) {
-      sink.push('<' + tag + '>' + children.join('') + '</' + tag + '>');
-    } else {
-      sink.push(children.join(''));
-    }
-  };
-  Array.from(root.childNodes).forEach((child) => render(child, output));
-  return output.join('');
-}
 
 function bodyText(plain) {
-  const html = String((plain && plain.body) || '');
-  if (!html) return '';
-  try {
-    const doc = new DOMParser().parseFromString(html, 'text/html');
-    return (doc.body.textContent || '').replace(/\s+/g, ' ').trim();
-  } catch (error) {
-    return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
-  }
+  return NN_MD.text((plain && plain.body) || '');
 }
 
 function inlineImageCount(plain) {
-  return (String((plain && plain.body) || '').match(/class="inline-image"/g) || []).length;
+  return NN_MD.extractImageIds((plain && plain.body) || '').length;
+}
+
+function imageAttachmentsOf(plain) {
+  return ((plain && plain.attachments) || []).filter((item) => item.kind === 'image');
+}
+
+// 旧版 body_format=html（contenteditable 富文本）→ Markdown 源码。
+// 旧内联 data-URI 图片转为 image 附件并在正文插入 `![[att:<id>]]` 占位符。
+function migrateLegacyBodyToMarkdown(plain) {
+  const legacyHTML = plain.body;
+  const makeImage = (item) => {
+    const match = INLINE_IMG_RE.exec(String((item && item.src) || ''));
+    if (!match) return '';
+    const id = genId();
+    plain.attachments.push({
+      id,
+      kind: 'image',
+      name: String((item && item.name) || '图片').slice(0, 120),
+      mime: match[1].toLowerCase(),
+      data: match[2],
+      duration: 0,
+      bytes: base64Bytes(match[2])
+    });
+    return '![[att:' + id + ']]';
+  };
+  plain.body = NN_MD.htmlToMarkdown(legacyHTML, makeImage);
+  plain.body_format = 'md';
 }
 
 function normalizePlain(plain) {
   if (!plain || typeof plain !== 'object') return plain;
   if (typeof plain.body !== 'string') plain.body = plain.body == null ? '' : String(plain.body);
-  const attachments = normalizeAttachments(plain.attachments);
-  if (plain.body_format !== 'html') plain.body = textToBodyHTML(plain.body);
-  const figures = attachments.filter((item) => item.kind === 'image')
-    .map((item) => inlineFigureHTML(item.mime, item.data, item.name)).join('');
-  plain.attachments = attachments.filter((item) => item.kind === 'audio');
-  if (figures) plain.body += figures;
-  plain.body_format = 'html';
-  plain.body = sanitizeBodyHTML(plain.body);
+  if (typeof plain.folder !== 'string') plain.folder = '';
+  if (plain.folder.length > 100) plain.folder = plain.folder.slice(0, 100);
+  plain.attachments = normalizeAttachments(plain.attachments);
+  if (plain.body_format !== 'md') migrateLegacyBodyToMarkdown(plain);
   return plain;
 }
 
@@ -531,7 +484,8 @@ function currentPlain() {
 
 function plainSize(plain) {
   return encoder.encode(JSON.stringify({
-    title: plain.title || '', body: plain.body || '', attachments: plain.attachments || []
+    title: plain.title || '', body: plain.body || '', folder: plain.folder || '',
+    attachments: plain.attachments || []
   })).length;
 }
 
@@ -541,7 +495,8 @@ async function addAttachments(items) {
   let added = 0;
   let totalBytes = 0;
   for (const item of items) {
-    if (plain.attachments.length >= 20) { toast('单条便签最多 20 段录音'); break; }
+    const audioCount = plain.attachments.filter((att) => att.kind === 'audio').length;
+    if (audioCount >= 20) { toast('单条便签最多 20 段录音'); break; }
     if (plainSize(plain) > MAX_PLAIN_JSON) { toast('便签体积已达上限，请删除部分录音'); break; }
     try {
       const result = item.kind === 'audio' ? item : await compressImage(item.file || item);
@@ -571,67 +526,61 @@ async function addAttachments(items) {
   toast(`已添加 ${added} 段录音（${formatBytes(totalBytes)}，已加密）`);
 }
 
-let savedBodyRange = null;
+let previewOn = false;
+let savedCaretPos = -1;
 
-function rememberBodySelection() {
-  const selection = window.getSelection();
-  if (!selection || !selection.rangeCount) return;
-  const node = selection.anchorNode;
-  const element = node && (node.nodeType === 1 ? node : node.parentElement);
-  if (element && els.bodyInput.contains(element)) {
-    savedBodyRange = selection.getRangeAt(0).cloneRange();
-  }
+function currentCaret() {
+  const ta = els.bodyInput;
+  return (typeof ta.selectionStart === 'number' && document.activeElement === ta)
+    ? ta.selectionStart : ta.value.length;
 }
 
-function insertHTMLAtSelection(html) {
-  els.bodyInput.focus();
-  const selection = window.getSelection();
-  selection.removeAllRanges();
-  if (savedBodyRange && els.bodyInput.contains(savedBodyRange.startContainer)) {
-    selection.addRange(savedBodyRange);
-  } else {
-    const range = document.createRange();
-    range.selectNodeContents(els.bodyInput);
-    range.collapse(false);
-    selection.addRange(range);
-  }
-  let inserted = false;
-  try { inserted = document.execCommand('insertHTML', false, html); } catch (error) { inserted = false; }
-  if (!inserted && selection.rangeCount) {
-    const range = selection.getRangeAt(0);
-    range.deleteContents();
-    const fragment = range.createContextualFragment(html);
-    const last = fragment.lastChild;
-    range.insertNode(fragment);
-    if (last) {
-      range.setStartAfter(last);
-      range.collapse(true);
-      selection.removeAllRanges();
-      selection.addRange(range);
-    }
-  }
-  rememberBodySelection();
+// 在光标处插入独立成行的图片占位符（预览态先切回编辑态）
+function insertImagePlaceholder(att, caret) {
+  if (previewOn) togglePreview(false);
+  const ta = els.bodyInput;
+  const value = ta.value;
+  let pos = Math.min(Math.max(0, caret), value.length);
+  const prefix = (pos > 0 && value[pos - 1] !== '\n') ? '\n' : '';
+  const suffix = (pos < value.length && value[pos] !== '\n') ? '\n' : '';
+  const insert = prefix + '![[att:' + att.id + ']]' + suffix;
+  ta.value = value.slice(0, pos) + insert + value.slice(pos);
+  const next = pos + insert.length;
+  ta.setSelectionRange(next, next);
+  ta.focus();
 }
 
 async function handleImageInput(event) {
   const files = Array.from(event.target.files || []);
   event.target.value = '';
   if (!files.length) return;
-  if (!currentPlain()) { toast('请先打开一条便签'); return; }
+  const plain = currentPlain();
+  if (!plain) { toast('请先打开一条便签'); return; }
+  const caret = savedCaretPos >= 0 ? savedCaretPos : currentCaret();
+  savedCaretPos = -1;
   let added = 0;
   let totalBytes = 0;
   for (const file of files) {
     try {
       const result = await compressImage(file);
       if (!result || !result.data) throw new Error('图片编码失败');
-      const figure = inlineFigureHTML(result.mime, result.data, file.name || '图片');
-      if (!figure) throw new Error('图片数据为空');
-      if (encoder.encode(els.bodyInput.innerHTML + figure).length > MAX_PLAIN_JSON) {
+      const att = {
+        id: genId(),
+        kind: 'image',
+        name: String(file.name || '图片').slice(0, 120),
+        mime: result.mime,
+        data: result.data,
+        duration: 0,
+        bytes: Number(result.bytes) || base64Bytes(result.data)
+      };
+      plain.attachments.push(att);
+      if (plainSize(plain) > MAX_PLAIN_JSON) {
+        plain.attachments.pop();
         toast('便签体积已达上限，请删除部分图片');
         break;
       }
-      insertHTMLAtSelection(figure);
-      totalBytes += Number(result.bytes) || base64Bytes(result.data);
+      insertImagePlaceholder(att, caret);
+      totalBytes += att.bytes;
       added += 1;
     } catch (error) {
       console.warn('[NasNotes] inline image failed', error);
@@ -640,7 +589,8 @@ async function handleImageInput(event) {
   }
   if (!added) return;
   handleEdit();
-  toast(`已在正文中插入 ${added} 张图片（压缩后共 ${formatBytes(totalBytes)}，已加密）`);
+  renderAttachments();
+  toast(`已插入 ${added} 张图片（压缩后共 ${formatBytes(totalBytes)}，已加密）`);
 }
 
 function pickAudioMime() {
@@ -774,7 +724,12 @@ function openLightbox(src) {
 function renderAttachments() {
   const plain = plainCache.get(currentId);
   const items = plain && Array.isArray(plain.attachments) ? plain.attachments : [];
-  els.attachCount.textContent = items.length ? `${items.length} 段录音` : '';
+  const images = items.filter((item) => item.kind === 'image').length;
+  const audios = items.filter((item) => item.kind === 'audio').length;
+  const parts = [];
+  if (images) parts.push(images + ' 张图片');
+  if (audios) parts.push(audios + ' 段录音');
+  els.attachCount.textContent = parts.length ? parts.join(' · ') : '';
   if (!items.length) {
     els.attachmentList.innerHTML = '';
     return;
@@ -802,13 +757,22 @@ function renderAttachments() {
 async function removeAttachment(id) {
   const plain = currentPlain();
   if (!plain) return;
+  const removed = (plain.attachments || []).find((item) => item.id === id);
   const before = plain.attachments.length;
   plain.attachments = plain.attachments.filter((item) => item.id !== id);
   if (plain.attachments.length === before) return;
+  // 图片附件删除时同步移除正文中的占位符
+  if (removed && removed.kind === 'image' && plain === plainCache.get(currentId)) {
+    const cleaned = String(plain.body || '').replace(
+      new RegExp('[ \\t]*!?\\[\\[att:' + id.replace(/[.*+?^${}()|[\]\\]/g, '\\$&') + '\\]\\][ \\t]*', 'gm'), '');
+    els.bodyInput.value = cleaned;
+    plain.body = cleaned;
+    if (previewOn) renderPreview();
+  }
   renderAttachments();
   const note = notesCache.get(currentId);
   if (note) await queueUpsert(note);
-  toast('录音已删除');
+  toast(removed && removed.kind === 'image' ? '图片已删除（正文占位符一并移除）' : '录音已删除');
 }
 
 // ---------- IndexedDB（仅密文） ----------
@@ -1015,8 +979,13 @@ async function lockApp() {
   currentId = null;
   document.body.classList.remove('show-editor');
   els.titleInput.value = '';
-  els.bodyInput.innerHTML = '';
-  savedBodyRange = null;
+  els.bodyInput.value = '';
+  previewOn = false;
+  els.mdPreview.innerHTML = '';
+  els.mdPreview.hidden = true;
+  els.bodyInput.hidden = false;
+  els.previewBtn.classList.remove('active');
+  els.previewBtn.textContent = '👁 预览';
   els.attachmentList.innerHTML = '';
   els.attachCount.textContent = '';
   document.querySelectorAll('.image-lightbox').forEach((node) => node.remove());
@@ -1027,12 +996,13 @@ async function lockApp() {
 async function queueUpsert(note) {
   if (!cryptoKey) return null;
   const plain = normalizePlain(plainCache.get(note.id) || {
-    title: '', body: '', body_format: 'html', attachments: []
+    title: '', body: '', body_format: 'md', folder: '', attachments: []
   });
   const sealed = await encryptJSON(cryptoKey, {
     title: plain.title || '',
     body: plain.body || '',
-    body_format: 'html',
+    body_format: 'md',
+    folder: plain.folder || '',
     attachments: normalizeAttachments(plain.attachments)
   });
 
@@ -1180,20 +1150,97 @@ function triggerSync(delay = 300) {
 }
 
 // ---------- 渲染（明文只来自内存） ----------
+const UNGROUPED = '未分类';
+const collapsedFolders = new Set();   // 仅内存：折叠的分类名
+
+function allFolders() {
+  const names = new Set();
+  for (const note of notesCache.values()) {
+    if (note.deleted) continue;
+    const plain = plainCache.get(note.id);
+    const folder = plain && typeof plain.folder === 'string' ? plain.folder.trim() : '';
+    if (folder) names.add(folder.slice(0, 100));
+  }
+  return Array.from(names).sort((a, b) => a.localeCompare(b, 'zh-CN'));
+}
+
+function renderFolderOptions() {
+  const plain = plainCache.get(currentId);
+  const current = plain && typeof plain.folder === 'string' ? plain.folder.trim() : '';
+  const folders = allFolders();
+  const parts = ['<option value="">（' + UNGROUPED + '）</option>'];
+  folders.forEach((name) => {
+    parts.push('<option value="' + esc(name) + '">' + esc(name) + '</option>');
+  });
+  if (current && !folders.includes(current)) {
+    parts.push('<option value="' + esc(current) + '" selected>' + esc(current) + '</option>');
+  }
+  els.folderSelect.innerHTML = parts.join('');
+  els.folderSelect.value = current;
+  const hasCurrent = Boolean(current);
+  const custom = hasCurrent && !folders.includes(current);
+  els.renameFolderBtn.hidden = !custom;
+  els.deleteFolderBtn.hidden = !custom;
+  if (custom) {
+    els.renameFolderBtn.title = '重命名分类「' + current + '」';
+    els.deleteFolderBtn.title = '删除分类「' + current + '」（其中便签移入未分类）';
+  }
+}
+
+function promptFolderName(initial, title) {
+  const name = window.prompt(title, initial || '');
+  if (name === null) return null;
+  const trimmed = name.trim().slice(0, 100);
+  if (!trimmed) { toast('分类名不能为空'); return null; }
+  if (trimmed === UNGROUPED) { toast('「' + UNGROUPED + '」是保留名称'); return null; }
+  return trimmed;
+}
+
+async function setFolderForAll(from, to) {
+  const stamp = new Date().toISOString();
+  let touched = 0;
+  for (const note of Array.from(notesCache.values())) {
+    if (note.deleted) continue;
+    const plain = plainCache.get(note.id);
+    if (!plain || typeof plain.folder !== 'string') continue;
+    if (plain.folder.trim() !== from) continue;
+    plain.folder = to;
+    plainCache.set(note.id, plain);
+    // plainCache 内容随输入实时同步，queueUpsert 读到的就是最新明文
+    await queueUpsert(note);
+    touched += 1;
+  }
+  return touched;
+}
+
 function visibleNotes() {
   const query = els.searchInput.value.trim().toLowerCase();
   return Array.from(notesCache.values())
     .filter((note) => !note.deleted)
     .map((note) => ({
       note,
-      plain: plainCache.get(note.id) || { title: '（无法解密）', body: '' }
+      plain: plainCache.get(note.id) || { title: '（无法解密）', body: '', folder: '' }
     }))
     .filter((item) => !query
       || (item.plain.title || '').toLowerCase().includes(query)
       || bodyText(item.plain).toLowerCase().includes(query)
+      || (item.plain.folder || '').toLowerCase().includes(query)
       || (item.plain.attachments || []).some((att) =>
         (att.name || '').toLowerCase().includes(query)))
     .sort((a, b) => String(b.note.updated_at).localeCompare(String(a.note.updated_at)));
+}
+
+function noteItemHTML(item, query) {
+  const images = inlineImageCount(item.plain);
+  const audios = (item.plain.attachments || []).filter((att) => att.kind === 'audio').length;
+  const attachmentHint = (images ? ` 🖼${images}` : '') + (audios ? ` 🎤${audios}` : '');
+  const snippet = (bodyText(item.plain).slice(0, 80) || '（空便签）') + attachmentHint;
+  return '<button class="note-item' + (item.note.id === currentId ? ' active' : '') +
+    '" type="button" data-id="' + esc(item.note.id) + '">' +
+    '<div class="item-title">' + highlight(item.plain.title || '（无标题）', query) + '</div>' +
+    '<div class="item-snippet">' + highlight(snippet || '（空便签）', query) + '</div>' +
+    '<div class="item-time">' + esc(formatTime(item.note.updated_at)) + '</div>' +
+    '</button>';
 }
 
 function renderList() {
@@ -1208,17 +1255,30 @@ function renderList() {
     return;
   }
 
-  els.noteList.innerHTML = items.map((item) => {
-    const images = inlineImageCount(item.plain);
-    const audios = (item.plain.attachments || []).length;
-    const attachmentHint = (images ? ` 🖼${images}` : '') + (audios ? ` 🎤${audios}` : '');
-    const snippet = (bodyText(item.plain).slice(0, 80) || '（空便签）') + attachmentHint;
-    return '<button class="note-item' + (item.note.id === currentId ? ' active' : '') +
-      '" type="button" data-id="' + esc(item.note.id) + '">' +
-      '<div class="item-title">' + highlight(item.plain.title || '（无标题）', query) + '</div>' +
-      '<div class="item-snippet">' + highlight(snippet || '（空便签）', query) + '</div>' +
-      '<div class="item-time">' + esc(formatTime(item.note.updated_at)) + '</div>' +
-      '</button>';
+  // 一级 = 分类，二级 = 该分类下的便签标题；「未分类」固定排最后
+  const groups = new Map();
+  items.forEach((item) => {
+    const folder = (item.plain.folder || '').trim().slice(0, 100) || UNGROUPED;
+    if (!groups.has(folder)) groups.set(folder, []);
+    groups.get(folder).push(item);
+  });
+  const folderNames = Array.from(groups.keys()).sort((a, b) => {
+    if (a === UNGROUPED) return 1;
+    if (b === UNGROUPED) return -1;
+    return a.localeCompare(b, 'zh-CN');
+  });
+
+  els.noteList.innerHTML = folderNames.map((folder) => {
+    const list = groups.get(folder);
+    const collapsed = collapsedFolders.has(folder);
+    const head = '<div class="folder-group-head" role="button" tabindex="0" data-folder="' + esc(folder) + '" title="点击折叠/展开">' +
+      '<span class="folder-caret">' + (collapsed ? '▸' : '▾') + '</span>' +
+      '<span class="folder-name">' + esc(folder) + '</span>' +
+      '<span class="folder-count">' + list.length + '</span>' +
+      '</div>';
+    const body = collapsed ? '' : '<div class="folder-group-body">' +
+      list.map((item) => noteItemHTML(item, query)).join('') + '</div>';
+    return '<div class="folder-group">' + head + body + '</div>';
   }).join('');
 }
 
@@ -1229,20 +1289,49 @@ function updateEditorMeta() {
     : '未选择便签';
 }
 
+function renderPreview() {
+  const plain = plainCache.get(currentId);
+  if (!plain) { els.mdPreview.innerHTML = ''; return; }
+  els.mdPreview.innerHTML = NN_MD.render(plain.body || '', imageAttachmentsOf(plain));
+}
+
+function togglePreview(force) {
+  const next = typeof force === 'boolean' ? force : !previewOn;
+  if (next === previewOn) return;
+  if (!currentId) return;
+  previewOn = next;
+  if (previewOn) {
+    // 先把 textarea 里的当前编辑同步进内存，再渲染
+    const plain = plainCache.get(currentId);
+    if (plain) plain.body = els.bodyInput.value;
+    renderPreview();
+  }
+  els.mdPreview.hidden = !previewOn;
+  els.bodyInput.hidden = previewOn;
+  els.previewBtn.classList.toggle('active', previewOn);
+  els.previewBtn.textContent = previewOn ? '✎ 编辑' : '👁 预览';
+}
+
 function renderEditor() {
   const plain = plainCache.get(currentId);
   if (!plain) {
     els.titleInput.value = '';
-    els.bodyInput.innerHTML = '';
+    els.bodyInput.value = '';
     els.deleteBtn.hidden = true;
     els.attachCount.textContent = '';
     els.attachmentList.innerHTML = '';
+    if (previewOn) togglePreview(false);
+    if (els.folderRow) els.folderRow.hidden = true;
+    if (els.mdToolbar) els.mdToolbar.hidden = true;
   } else {
     normalizePlain(plain);
     els.titleInput.value = plain.title || '';
-    els.bodyInput.innerHTML = plain.body || '';
-    savedBodyRange = null;
+    els.bodyInput.value = plain.body || '';
+    if (previewOn) renderPreview();
     els.deleteBtn.hidden = false;
+    if (els.folderRow) els.folderRow.hidden = false;
+    if (els.mdToolbar) els.mdToolbar.hidden = false;
+    renderFolderOptions();
     renderAttachments();
   }
   updateEditorMeta();
@@ -1250,6 +1339,11 @@ function renderEditor() {
 
 function selectNote(id) {
   currentId = id;
+  previewOn = false;
+  els.mdPreview.hidden = true;
+  els.bodyInput.hidden = false;
+  els.previewBtn.classList.remove('active');
+  els.previewBtn.textContent = '👁 预览';
   document.body.classList.add('show-editor');
   renderList();
   renderEditor();
@@ -1370,7 +1464,8 @@ els.newBtn.addEventListener('click', () => {
   if (!cryptoKey) return;
   const stamp = new Date().toISOString();
   const id = genId();
-  plainCache.set(id, { title: '', body: '', body_format: 'html', attachments: [] });
+  const keepFolder = (els.folderSelect.value || '').trim();
+  plainCache.set(id, { title: '', body: '', body_format: 'md', folder: keepFolder, attachments: [] });
   notesCache.set(id, {
     id, iv: '', payload: '', created_at: stamp,
     updated_at: stamp, deleted: false, device: deviceId
@@ -1380,8 +1475,23 @@ els.newBtn.addEventListener('click', () => {
 });
 
 els.noteList.addEventListener('click', (event) => {
+  const head = event.target.closest('.folder-group-head');
+  if (head) {
+    const folder = head.dataset.folder || '';
+    if (collapsedFolders.has(folder)) collapsedFolders.delete(folder);
+    else collapsedFolders.add(folder);
+    renderList();
+    return;
+  }
   const button = event.target.closest('.note-item');
   if (button) selectNote(button.dataset.id);
+});
+
+els.noteList.addEventListener('keydown', (event) => {
+  if ((event.key === 'Enter' || event.key === ' ') && event.target.classList.contains('folder-group-head')) {
+    event.preventDefault();
+    event.target.click();
+  }
 });
 
 els.searchInput.addEventListener('input', renderList);
@@ -1389,40 +1499,161 @@ els.syncBtn.addEventListener('click', () => { clearTimeout(syncTimer); sync(); }
 
 els.imageBtn.addEventListener('click', () => {
   if (!currentPlain()) { toast('请先打开一条便签'); return; }
-  rememberBodySelection();
+  savedCaretPos = currentCaret();
   els.imageInput.click();
 });
 els.imageInput.addEventListener('change', handleImageInput);
 els.recordBtn.addEventListener('click', toggleRecording);
-document.addEventListener('selectionchange', rememberBodySelection);
-els.bodyInput.addEventListener('paste', (event) => {
-  // 只接受纯文本，避免粘贴 HTML 带入脚本或多余体积。
-  event.preventDefault();
-  const text = (event.clipboardData && event.clipboardData.getData('text/plain')) || '';
-  if (!text) return;
-  const selection = window.getSelection();
-  if (!selection || !selection.rangeCount) return;
-  const range = selection.getRangeAt(0);
-  range.deleteContents();
-  const node = document.createTextNode(text);
-  range.insertNode(node);
-  range.setStartAfter(node);
-  range.collapse(true);
-  selection.removeAllRanges();
-  selection.addRange(range);
+
+// 预览态点击图片放大（渲染产物只有 <img data-preview-image>）
+els.mdPreview.addEventListener('click', (event) => {
+  const img = event.target.closest('img[data-preview-image]');
+  if (img) openLightbox(img.src);
 });
-els.bodyInput.addEventListener('click', (event) => {
-  const remove = event.target.closest('[data-remove-inline]');
-  if (remove) {
-    const figure = remove.closest('figure.inline-image');
-    if (figure) {
-      figure.remove();
+
+// ---------- Markdown 工具栏 ----------
+function applyAround(prefix, suffix, placeholder) {
+  const ta = els.bodyInput;
+  const start = ta.selectionStart;
+  const end = ta.selectionEnd;
+  const selected = ta.value.slice(start, end);
+  const text = selected || placeholder || '';
+  ta.value = ta.value.slice(0, start) + prefix + text + suffix + ta.value.slice(end);
+  const caretStart = start + prefix.length;
+  ta.focus();
+  if (selected) ta.setSelectionRange(caretStart, caretStart + text.length);
+  else ta.setSelectionRange(caretStart, caretStart + text.length);
+  handleEdit();
+}
+
+function applyLinePrefix(makePrefix) {
+  const ta = els.bodyInput;
+  const start = ta.selectionStart;
+  const end = ta.selectionEnd;
+  const value = ta.value;
+  const lineStart = value.lastIndexOf('\n', start - 1) + 1;
+  let lineEnd = value.indexOf('\n', end);
+  if (lineEnd < 0) lineEnd = value.length;
+  const block = value.slice(lineStart, lineEnd);
+  const lines = block.length ? block.split('\n') : [''];
+  // 已全部带该前缀则取消（切换语义）
+  const prefixes = lines.map((line, i) => makePrefix(i, line));
+  const already = lines.every((line, i) => line.startsWith(prefixes[i]));
+  const nextLines = already ? lines.map((line, i) => line.slice(prefixes[i].length))
+    : lines.map((line, i) => {
+      const stripped = line.replace(/^(\s*)(?:[-*+]\s+|\d{1,9}[.)]\s+|>\s+|#{1,6}\s+)?/, '$1');
+      return prefixes[i] + stripped.replace(/^\s+/, '');
+    });
+  const next = nextLines.join('\n');
+  ta.value = value.slice(0, lineStart) + next + value.slice(lineEnd);
+  ta.focus();
+  ta.setSelectionRange(lineStart, lineStart + next.length);
+  handleEdit();
+}
+
+function handleMdAction(kind) {
+  if (!currentId) { toast('请先打开一条便签'); return; }
+  if (kind === 'preview') { togglePreview(); return; }
+  if (previewOn) togglePreview(false);
+  switch (kind) {
+    case 'bold': applyAround('**', '**', '加粗文字'); break;
+    case 'italic': applyAround('*', '*', '斜体文字'); break;
+    case 'strike': applyAround('~~', '~~', '删除线'); break;
+    case 'code': applyAround('`', '`', 'code'); break;
+    case 'h1': applyLinePrefix(() => '# '); break;
+    case 'h2': applyLinePrefix(() => '## '); break;
+    case 'h3': applyLinePrefix(() => '### '); break;
+    case 'ul': applyLinePrefix(() => '- '); break;
+    case 'ol': applyLinePrefix((i) => (i + 1) + '. '); break;
+    case 'task': applyLinePrefix(() => '- [ ] '); break;
+    case 'quote': applyLinePrefix(() => '> '); break;
+    case 'link': applyAround('[', '](https://)', '链接文字'); break;
+    case 'hr': {
+      const ta = els.bodyInput;
+      const start = ta.selectionStart;
+      const before = start > 0 && ta.value[start - 1] !== '\n' ? '\n' : '';
+      const text = before + '---\n';
+      ta.value = ta.value.slice(0, start) + text + ta.value.slice(ta.selectionEnd);
+      const next = start + text.length;
+      ta.focus();
+      ta.setSelectionRange(next, next);
       handleEdit();
-      toast('正文图片已删除');
+      break;
     }
-    return;
+    default: break;
   }
-  if (event.target.closest('[data-inline-image]')) openLightbox(event.target.src);
+}
+
+els.mdToolbar.addEventListener('click', (event) => {
+  const btn = event.target.closest('[data-md]');
+  if (!btn) return;
+  event.preventDefault();
+  handleMdAction(btn.dataset.md);
+});
+
+// Ctrl/Cmd+B/I/K 快捷键（与 Joplin 习惯一致）
+els.bodyInput.addEventListener('keydown', (event) => {
+  if (!(event.ctrlKey || event.metaKey)) return;
+  const key = event.key.toLowerCase();
+  if (key === 'b') { event.preventDefault(); handleMdAction('bold'); }
+  else if (key === 'i') { event.preventDefault(); handleMdAction('italic'); }
+  else if (key === 'k') { event.preventDefault(); handleMdAction('link'); }
+});
+
+// ---------- 分类操作 ----------
+els.folderSelect.addEventListener('change', async () => {
+  const plain = currentPlain();
+  if (!plain) return;
+  plain.folder = (els.folderSelect.value || '').trim().slice(0, 100);
+  plainCache.set(currentId, plain);
+  renderFolderOptions();
+  const note = notesCache.get(currentId);
+  if (note) await queueUpsert(note);
+  renderList();
+  toast(plain.folder ? '已移入分类「' + plain.folder + '」' : '已移入' + UNGROUPED);
+});
+
+els.newFolderBtn.addEventListener('click', async () => {
+  if (!currentId) { toast('请先打开一条便签'); return; }
+  const name = promptFolderName('', '新建分类名称');
+  if (!name) return;
+  const plain = currentPlain();
+  if (plain) {
+    plain.folder = name;
+    plainCache.set(currentId, plain);
+    const note = notesCache.get(currentId);
+    if (note) await queueUpsert(note);
+  }
+  renderFolderOptions();
+  renderList();
+  toast('已新建分类「' + name + '」，当前便签已移入');
+});
+
+els.renameFolderBtn.addEventListener('click', async () => {
+  const plain = currentPlain();
+  if (!plain) return;
+  const from = (plain.folder || '').trim();
+  if (!from) return;
+  const to = promptFolderName(from, '重命名分类「' + from + '」为：');
+  if (!to || to === from) return;
+  const touched = await setFolderForAll(from, to);
+  if (plain === plainCache.get(currentId)) plain.folder = to;
+  renderFolderOptions();
+  renderList();
+  toast('分类「' + from + '」已重命名为「' + to + '」（' + touched + ' 条便签）');
+});
+
+els.deleteFolderBtn.addEventListener('click', async () => {
+  const plain = currentPlain();
+  if (!plain) return;
+  const from = (plain.folder || '').trim();
+  if (!from) return;
+  if (!window.confirm('删除分类「' + from + '」？其中便签会移入' + UNGROUPED + '，便签本身不会删除。')) return;
+  const touched = await setFolderForAll(from, '');
+  if (plain === plainCache.get(currentId)) plain.folder = '';
+  renderFolderOptions();
+  renderList();
+  toast('分类「' + from + '」已删除，' + touched + ' 条便签移入' + UNGROUPED);
 });
 els.attachmentList.addEventListener('click', (event) => {
   const remove = event.target.closest('[data-remove]');
@@ -1455,10 +1686,11 @@ els.deleteBtn.addEventListener('click', async () => {
 function handleEdit() {
   const note = notesCache.get(currentId);
   if (!note || !cryptoKey) return;
-  const plain = plainCache.get(currentId) || { title: '', body: '', body_format: 'html', attachments: [] };
+  const plain = plainCache.get(currentId) || { title: '', body: '', body_format: 'md', folder: '', attachments: [] };
   plain.title = els.titleInput.value;
-  plain.body = els.bodyInput.innerHTML;
-  plain.body_format = 'html';
+  plain.body = els.bodyInput.value;
+  plain.body_format = 'md';
+  if (typeof plain.folder !== 'string') plain.folder = '';
   if (!Array.isArray(plain.attachments)) plain.attachments = [];
   plainCache.set(currentId, plain);
   setSaveState('编辑中…');
