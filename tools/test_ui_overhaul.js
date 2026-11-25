@@ -46,14 +46,38 @@ ok('外观设置含主题与编辑字号，保存写入本机', () => {
   assert.match(css, /--editor-fs:/);
 });
 
-ok('工具栏字号立即作用于编辑区（不再插入 span 源码）', () => {
-  assert.match(html, /data-md="fs-small"[^>]*>A-/);
-  assert.match(html, /data-md="fs-normal"[^>]*>A</);
-  assert.match(html, /data-md="fs-large"[^>]*>A\+/);
+ok('工具栏字号以「字号」下拉切换，立即作用于编辑区（不再插入 span 源码）', () => {
+  assert.match(html, /id="fontSizeSelect"[\s\S]{0,240}<option value="xlarge"/);
+  assert.match(html, /id="headingSelect"[\s\S]{0,200}<option value="h3"/);
+  assert.match(app, /els\.fontSizeSelect\.addEventListener\('change'/);
+  assert.match(app, /els\.headingSelect\.addEventListener\('change'/);
   const block = app.slice(app.indexOf('function applyFontSize'), app.indexOf('// 插入表格'));
   assert.match(block, /applyEditorFont\(key\)/);
   assert.match(block, /localStorage\.setItem\('nn-editor-font'/);
   assert.doesNotMatch(block, /fsWrap/);
+});
+
+ok('工具栏桌面两行分组，手机合并成一行横向滑动', () => {
+  const toolbar = html.slice(html.indexOf('id="mdToolbar"'), html.indexOf('class="rich-pane"'));
+  assert.strictEqual((toolbar.match(/class="md-row"/g) || []).length, 2);
+  assert.match(toolbar, /data-md="table"/);
+  assert.match(toolbar, /data-md="hr"/);
+  assert.match(toolbar, /id="imageBtn"/);
+  assert.match(toolbar, /id="recordBtn"/);
+  assert.match(css, /\.md-toolbar\s*\{[^}]*flex-direction:\s*column/);
+  assert.match(css, /@media \(max-width: 760px\)[\s\S]*\.md-toolbar\s*\{[^}]*flex-wrap:\s*nowrap/);
+  assert.match(css, /@media \(max-width: 760px\)[\s\S]*\.md-toolbar\s*\{[^}]*overflow-x:\s*auto/);
+  assert.match(css, /\.md-row\s*\{\s*display:\s*contents/);
+});
+
+ok('标题区含字数计数与「保存」按钮，正文页脚显示字符数', () => {
+  assert.match(html, /id="titleCount"[^>]*>0\/200</);
+  assert.match(html, /id="bodyCount"[^>]*>0 字符</);
+  assert.match(html, /id="saveNowBtn"/);
+  assert.match(html, /class="title-field"/);
+  assert.match(app, /function updateCounters\(\)/);
+  assert.match(app, /async function saveNow\(\)/);
+  assert.match(app, /els\.saveNowBtn\.addEventListener\('click', saveNow\)/);
 });
 
 ok('插入表格直接落到正文，不依赖 dialog/prompt（WebView 兼容）', () => {
@@ -118,8 +142,8 @@ ok('分栏预览随输入实时更新，双栏滚动联动', () => {
   assert.match(css, /body\.view-view \.source-pane/);
 });
 
-ok('Service Worker 缓存已升版到 v18', () => {
-  assert.match(sw, /const CACHE = 'nas-notes-v18'/);
+ok('Service Worker 缓存已升版到 v19', () => {
+  assert.match(sw, /const CACHE = 'nas-notes-v19'/);
 });
 
 console.log('\nUI overhaul tests: ' + pass + ' pass');

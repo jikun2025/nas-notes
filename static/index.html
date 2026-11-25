@@ -84,7 +84,16 @@
       </div>
       <div class="editor-scroll">
         <div class="editor-page">
-          <input id="titleInput" class="title-input" type="text" maxlength="200" placeholder="无标题便签" aria-label="标题">
+          <!-- 标题区：输入框内嵌字数计数，右侧固定「保存」，对齐桌面便签应用的版式 -->
+          <div class="doc-head">
+            <div class="title-field">
+              <input id="titleInput" class="title-input" type="text" maxlength="200" placeholder="无标题便签" aria-label="标题">
+              <span id="titleCount" class="title-count">0/200</span>
+            </div>
+            <div class="doc-actions">
+              <button id="saveNowBtn" class="primary save-now" type="button" title="立即加密保存并同步">✓ 保存</button>
+            </div>
+          </div>
           <div class="folder-row">
             <span class="folder-label">分类</span>
             <select id="folderSelect" class="folder-select" aria-label="便签分类"></select>
@@ -92,33 +101,52 @@
             <button id="renameFolderBtn" class="ghost small" type="button" title="重命名当前分类" hidden>改名</button>
             <button id="deleteFolderBtn" class="ghost small" type="button" title="删除当前分类（其中便签移入未分类）" hidden>删分类</button>
           </div>
-          <div class="md-toolbar" id="mdToolbar" role="toolbar" aria-label="Markdown 排版工具">
-            <button type="button" class="md-btn" data-md="bold" title="加粗 **文字**"><b>B</b></button>
-            <button type="button" class="md-btn" data-md="italic" title="斜体 *文字*"><i>I</i></button>
-            <button type="button" class="md-btn" data-md="strike" title="删除线 ~~文字~~"><s>S</s></button>
-            <span class="md-sep"></span>
-            <button type="button" class="md-btn" data-md="h1" title="一级标题">H1</button>
-            <button type="button" class="md-btn" data-md="h2" title="二级标题">H2</button>
-            <button type="button" class="md-btn" data-md="h3" title="三级标题">H3</button>
-            <span class="md-sep"></span>
-            <button type="button" class="md-btn" data-md="ul" title="无序列表">•≡</button>
-            <button type="button" class="md-btn" data-md="ol" title="有序列表">1.≡</button>
-            <button type="button" class="md-btn" data-md="task" title="待办项 - [ ]">☑</button>
-            <span class="md-sep"></span>
-            <button type="button" class="md-btn" data-md="link" title="链接 [文字](网址)">🔗</button>
-            <button type="button" class="md-btn" data-md="quote" title="引用 &gt; 文字">❝</button>
-            <button type="button" class="md-btn" data-md="code" title="代码 `文字` / ```块```">&lt;/&gt;</button>
-            <button type="button" class="md-btn" data-md="hr" title="分隔线 ---">―</button>
-            <span class="md-sep"></span>
-            <button type="button" class="md-btn md-fs" data-md="fs-small" title="编辑区小字体">A-</button>
-            <button type="button" class="md-btn md-fs" data-md="fs-normal" title="编辑区标准字体">A</button>
-            <button type="button" class="md-btn md-fs" data-md="fs-large" title="编辑区大字体">A+</button>
-            <span class="md-sep"></span>
-            <button type="button" class="md-btn" data-md="table" title="插入表格（弹窗选行列）">▦ 表格</button>
-            <button type="button" class="md-btn" data-md="row-add" title="表格末尾加一行">＋行</button>
-            <button type="button" class="md-btn" data-md="row-del" title="删除光标所在行">－行</button>
-            <button type="button" class="md-btn" data-md="col-add" title="光标右侧加一列">＋列</button>
-            <button type="button" class="md-btn" data-md="col-del" title="删除光标所在列">－列</button>
+          <!-- 工具栏两行：上行字体与段落，下行插入与表格；手机端合并成一行横向滑动 -->
+          <div class="md-toolbar" id="mdToolbar" role="toolbar" aria-label="排版工具">
+            <div class="md-row">
+              <label class="md-pick" title="段落样式（标题级别）">
+                <span class="md-pick-label">段落</span>
+                <select id="headingSelect" aria-label="段落样式">
+                  <option value="p">正文</option>
+                  <option value="h1">标题 1</option>
+                  <option value="h2">标题 2</option>
+                  <option value="h3">标题 3</option>
+                </select>
+              </label>
+              <label class="md-pick" title="编辑区字号（仅本机显示，不写入便签）">
+                <span class="md-pick-label">字号</span>
+                <select id="fontSizeSelect" aria-label="编辑区字号">
+                  <option value="small">小</option>
+                  <option value="normal" selected>标准</option>
+                  <option value="large">大</option>
+                  <option value="xlarge">特大</option>
+                </select>
+              </label>
+              <span class="md-sep"></span>
+              <button type="button" class="md-btn" data-md="bold" title="加粗（Ctrl+B）"><b>B</b></button>
+              <button type="button" class="md-btn" data-md="italic" title="斜体（Ctrl+I）"><i>I</i></button>
+              <button type="button" class="md-btn" data-md="strike" title="删除线"><s>S</s></button>
+              <span class="md-sep"></span>
+              <button type="button" class="md-btn" data-md="ul" title="无序列表">•≡</button>
+              <button type="button" class="md-btn" data-md="ol" title="有序列表">1.≡</button>
+              <button type="button" class="md-btn" data-md="task" title="待办项">☑</button>
+              <span class="md-sep"></span>
+              <button type="button" class="md-btn" data-md="quote" title="引用">❝</button>
+              <button type="button" class="md-btn" data-md="code" title="行内代码">&lt;/&gt;</button>
+              <button type="button" class="md-btn" data-md="link" title="链接（Ctrl+K）">🔗</button>
+            </div>
+            <div class="md-row">
+              <button type="button" class="md-btn" id="imageBtn" title="图片作为附件插入正文光标位置（自动压缩加密）">🖼 图片</button>
+              <button type="button" class="md-btn" id="recordBtn" title="录制语音">🎤 <span id="recordLabel">录音</span></button>
+              <span class="md-sep"></span>
+              <button type="button" class="md-btn" data-md="table" title="插入 3 列 × 2 行表格">▦ 表格</button>
+              <button type="button" class="md-btn" data-md="row-add" title="表格末尾加一行">＋行</button>
+              <button type="button" class="md-btn" data-md="row-del" title="删除光标所在行">－行</button>
+              <button type="button" class="md-btn" data-md="col-add" title="光标右侧加一列">＋列</button>
+              <button type="button" class="md-btn" data-md="col-del" title="删除光标所在列">－列</button>
+              <span class="md-sep"></span>
+              <button type="button" class="md-btn" data-md="hr" title="分隔线">―</button>
+            </div>
           </div>
           <!-- 富文本编辑区：直接编辑渲染后的 DOM（对标 Joplin 移动端的「富文本」模式），
                保存时由 html2md.js 序列化回 Markdown。 -->
@@ -137,14 +165,13 @@
               <div id="mdPreview" class="md-preview"></div>
             </section>
           </div>
-          <div class="attachment-bar">
-            <button id="imageBtn" class="ghost small" type="button" title="图片作为附件插入正文光标位置（自动压缩加密）">🖼 插入图片</button>
-            <button id="recordBtn" class="ghost small" type="button" title="录制语音">🎤 <span id="recordLabel">录音</span></button>
-            <span id="attachCount" class="muted tiny inline"></span>
-            <input id="imageInput" type="file" accept="image/*" multiple hidden>
+          <input id="imageInput" type="file" accept="image/*" multiple hidden>
+          <div id="attachmentList" class="attachment-list" aria-label="图片与录音"></div>
+          <div class="editor-foot">
+            <span id="attachCount" class="foot-meta"></span>
+            <span id="bodyCount" class="foot-count">0 字符</span>
+            <span id="saveState">已锁定</span>
           </div>
-          <div id="attachmentList" class="attachment-list" aria-label="录音列表"></div>
-          <div class="editor-foot"><span id="saveState">已锁定</span></div>
         </div>
       </div>
     </main>

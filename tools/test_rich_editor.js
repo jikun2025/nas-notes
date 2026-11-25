@@ -49,7 +49,7 @@ ok('默认视图迁移到富文本（老 edit/split 一次性迁移）', () => {
 
 ok('工具栏在富文本下改 DOM，不插入 Markdown 符号', () => {
   assert.match(app, /function handleRichAction\(kind\)/);
-  assert.match(app, /if \(isRichMode\(\)\) \{ handleRichAction\(kind\); return; \}/);
+  assert.match(app, /if \(isRichMode\(\)\) \{ handleRichAction\(kind\); syncHeadingSelect\(\); return; \}/);
   // 加粗走 execCommand，而不是 applyAround('**','**')
   const block = app.slice(app.indexOf('function handleRichAction'), app.indexOf('function richKeydown'));
   assert.match(block, /richExec\('bold'\)/);
@@ -90,7 +90,7 @@ ok('图片渲染带 data-att，才能往返成占位符', () => {
 });
 
 ok('Service Worker 缓存已升版并纳入 html2md.js', () => {
-  assert.match(sw, /const CACHE = 'nas-notes-v18'/);
+  assert.match(sw, /const CACHE = 'nas-notes-v19'/);
   assert.match(sw, /'\/html2md\.js'/);
 });
 

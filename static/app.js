@@ -93,6 +93,11 @@ const els = {
   deleteBtn: document.getElementById('deleteBtn'),
   editorMeta: document.getElementById('editorMeta'),
   titleInput: document.getElementById('titleInput'),
+  titleCount: document.getElementById('titleCount'),
+  bodyCount: document.getElementById('bodyCount'),
+  saveNowBtn: document.getElementById('saveNowBtn'),
+  headingSelect: document.getElementById('headingSelect'),
+  fontSizeSelect: document.getElementById('fontSizeSelect'),
   bodyInput: document.getElementById('bodyInput'),
   richPane: document.getElementById('richPane'),
   richEditor: document.getElementById('richEditor'),
@@ -172,9 +177,7 @@ function applyEditorFont(value) {
   editorFont = EDITOR_FONT_PX[value] ? value : 'normal';
   document.documentElement.style.setProperty('--editor-fs', EDITOR_FONT_PX[editorFont]);
   if (els.editorFontSelect) els.editorFontSelect.value = editorFont;
-  els.mdToolbar.querySelectorAll('[data-md^="fs-"]').forEach((btn) => {
-    btn.classList.toggle('active', btn.dataset.md === 'fs-' + editorFont || (editorFont === 'normal' && btn.dataset.md === 'fs-normal'));
-  });
+  if (els.fontSizeSelect) els.fontSizeSelect.value = editorFont;
 }
 
 // ---------- 编辑视图 ----------
@@ -205,6 +208,8 @@ function applyViewMode(next, persist = true) {
   if (viewMode === 'source') autoGrowBody();
   if (viewMode === 'split' || viewMode === 'view') renderPreview();
   if (persist) localStorage.setItem('nn-view-mode', viewMode);
+  syncHeadingSelect();
+  updateCounters();
 }
 
 // 源码单栏时让 textarea 随内容增高，整个页面统一滚动（不再"盒子里套盒子"）
@@ -1673,8 +1678,21 @@ function renderList() {
   }).join('');
 }
 
+// 字数统计：标题计数固定显示在输入框内，正文计数在页脚（取渲染后的可见文字，不含 Markdown 符号）
+function updateCounters() {
+  if (els.titleCount && els.titleInput) {
+    const max = els.titleInput.maxLength > 0 ? els.titleInput.maxLength : 200;
+    els.titleCount.textContent = els.titleInput.value.length + '/' + max;
+  }
+  if (els.bodyCount) {
+    const plain = plainCache.get(currentId);
+    els.bodyCount.textContent = bodyText(plain || { body: '' }).length + ' 字符';
+  }
+}
+
 function updateEditorMeta() {
   const note = notesCache.get(currentId);
+  updateCounters();
   if (!note) { els.editorMeta.textContent = '未选择便签'; return; }
   const plain = plainCache.get(currentId);
   const chars = bodyText(plain || { body: '' }).length;
@@ -1766,6 +1784,7 @@ function renderEditor() {
     if (els.richEditor) els.richEditor.innerHTML = '';
     if (els.folderRow) els.folderRow.hidden = true;
     if (els.mdToolbar) els.mdToolbar.hidden = true;
+    if (els.saveNowBtn) els.saveNowBtn.disabled = true;
   } else {
     normalizePlain(plain);
     els.titleInput.value = plain.title || '';
@@ -1775,10 +1794,12 @@ function renderEditor() {
     els.deleteBtn.hidden = false;
     if (els.folderRow) els.folderRow.hidden = false;
     if (els.mdToolbar) els.mdToolbar.hidden = false;
+    if (els.saveNowBtn) els.saveNowBtn.disabled = false;
     renderFolderOptions();
     renderAttachments();
   }
   updateEditorMeta();
+  requestAnimationFrame(updateToolbarScrollState);
 }
 
 function selectNote(id) {
@@ -2492,6 +2513,7 @@ function richTableOp(op) {
 
 function handleRichAction(kind) {
   switch (kind) {
+    case 'p': richFormatBlock('p'); break;
     case 'bold': richExec('bold'); break;
     case 'italic': richExec('italic'); break;
     case 'strike': richExec('strikeThrough'); break;
@@ -2540,6 +2562,7 @@ function updateRichToolbarState() {
     const sel = window.getSelection();
     codeBtn.classList.toggle('active', Boolean(richClosest(sel && sel.anchorNode, 'code')));
   }
+  if (els.headingSelect) els.headingSelect.value = /^h[1-3]$/.test(tag) ? tag : 'p';
 }
 
 function richKeydown(event) {
@@ -2588,6 +2611,46 @@ function applyLinePrefix(makePrefix) {
   ta.focus();
   ta.setSelectionRange(lineStart, lineStart + next.length);
   handleEdit();
+}
+
+// 「段落：正文」：把当前行的 Markdown 标题标记去掉（源码模式）
+function clearHeadingSource() {
+  const ta = els.bodyInput;
+  const value = ta.value;
+  const start = ta.selectionStart;
+  const end = ta.selectionEnd;
+  const lineStart = value.lastIndexOf('\n', start - 1) + 1;
+  let lineEnd = value.indexOf('\n', end);
+  if (lineEnd < 0) lineEnd = value.length;
+  const block = value.slice(lineStart, lineEnd).replace(/^#{1,6}\s+/gm, '');
+  ta.value = value.slice(0, lineStart) + block + value.slice(lineEnd);
+  ta.focus();
+  const caret = lineStart + block.length;
+  ta.setSelectionRange(caret, caret);
+  handleEdit();
+}
+
+// 取光标所在段落的标题级别，用来让工具栏下拉框跟随当前段落
+function currentHeadingLevel() {
+  if (isRichMode()) {
+    const tag = richBlockTag();
+    return /^h[1-3]$/.test(tag) ? tag : 'p';
+  }
+  if (isSourceMode()) {
+    const ta = els.bodyInput;
+    const start = ta.selectionStart;
+    const lineStart = ta.value.lastIndexOf('\n', start - 1) + 1;
+    let lineEnd = ta.value.indexOf('\n', start);
+    if (lineEnd < 0) lineEnd = ta.value.length;
+    const match = /^(#{1,6})\s+/.exec(ta.value.slice(lineStart, lineEnd));
+    return match && match[1].length <= 3 ? 'h' + match[1].length : 'p';
+  }
+  return 'p';
+}
+
+function syncHeadingSelect() {
+  if (!els.headingSelect) return;
+  els.headingSelect.value = currentHeadingLevel();
 }
 
 // 编辑区字号：立即作用于编辑区和预览，设置只保存在本机，不写入便签正文。
@@ -2645,13 +2708,14 @@ function handleMdAction(kind) {
   if (kind === 'preview') { togglePreview(); return; }
   // 字号是本机外观设置，两种编辑模式下都生效
   if (kind.indexOf('fs-') === 0) { applyFontSize(kind.slice(3)); return; }
-  if (isRichMode()) { handleRichAction(kind); return; }
+  if (isRichMode()) { handleRichAction(kind); syncHeadingSelect(); return; }
   if (viewMode === 'view') applyViewMode('source');
   if (kind === 'table') { insertTable(); return; }
   if (kind === 'row-add' || kind === 'row-del' || kind === 'col-add' || kind === 'col-del') {
     tableOperate(kind);
     return;
   }
+  if (kind === 'p') { clearHeadingSource(); syncHeadingSelect(); return; }
   switch (kind) {
     case 'bold': applyAround('**', '**', '加粗文字'); break;
     case 'italic': applyAround('*', '*', '斜体文字'); break;
@@ -2679,6 +2743,20 @@ function handleMdAction(kind) {
     }
     default: break;
   }
+  syncHeadingSelect();
+}
+
+// 手机端：工具栏一行横滑，可滑时右缘渐隐提示，滑到尽头撤掉
+function updateToolbarScrollState() {
+  const el = els.mdToolbar;
+  if (!el) return;
+  const max = el.scrollWidth - el.clientWidth;
+  el.classList.toggle('can-scroll', max > 4);
+  el.classList.toggle('at-end', max > 4 && el.scrollLeft >= max - 4);
+}
+if (els.mdToolbar) {
+  els.mdToolbar.addEventListener('scroll', updateToolbarScrollState, { passive: true });
+  window.addEventListener('resize', updateToolbarScrollState);
 }
 
 // 富文本里点工具栏不能让 contenteditable 失焦：一旦失焦选区就没了，加粗/标题会作用不到文字上。
@@ -2692,6 +2770,18 @@ els.mdToolbar.addEventListener('click', (event) => {
   event.preventDefault();
   handleMdAction(btn.dataset.md);
 });
+
+// 工具栏下拉：段落样式（正文/H1-H3）与编辑区字号
+if (els.headingSelect) {
+  els.headingSelect.addEventListener('change', () => {
+    handleMdAction(els.headingSelect.value || 'p');
+  });
+}
+if (els.fontSizeSelect) {
+  els.fontSizeSelect.addEventListener('change', () => {
+    applyFontSize(els.fontSizeSelect.value);
+  });
+}
 
 // Ctrl/Cmd+B/I/K 快捷键（与 Joplin 习惯一致）
 els.bodyInput.addEventListener('keydown', (event) => {
@@ -2792,6 +2882,23 @@ async function deleteNoteById(id) {
 
 els.deleteBtn.addEventListener('click', () => deleteNoteById(currentId));
 
+// 顶部「✓ 保存」：不等 450ms 的自动保存，立刻把内存明文加密落盘并触发一次同步。
+async function saveNow() {
+  if (!currentId || !cryptoKey) { toast('请先打开一条便签'); return; }
+  if (isRichMode()) flushRich();
+  clearTimeout(saveTimer);
+  saveTimer = null;
+  const note = notesCache.get(currentId);
+  if (!note) return;
+  await queueUpsert(note);
+  renderList();
+  updateEditorMeta();
+  toast('已保存');
+  if (syncMode === 'auto') triggerSync(200);
+}
+
+if (els.saveNowBtn) els.saveNowBtn.addEventListener('click', saveNow);
+
 function handleEdit() {
   const note = notesCache.get(currentId);
   if (!note || !cryptoKey) return;
@@ -2803,6 +2910,7 @@ function handleEdit() {
   if (!Array.isArray(plain.attachments)) plain.attachments = [];
   plainCache.set(currentId, plain);
   setSaveState('编辑中…');
+  updateEditorMeta();
   if (viewMode === 'source') autoGrowBody();
   schedulePreview();
   clearTimeout(saveTimer);
@@ -2841,8 +2949,11 @@ if (els.richEditor) {
   });
   document.addEventListener('selectionchange', () => {
     rememberRichRange();
-    scheduleRichToolbarState();
+    if (isRichMode()) scheduleRichToolbarState();
+    else syncHeadingSelect();
   });
+  els.bodyInput.addEventListener('click', syncHeadingSelect);
+  els.bodyInput.addEventListener('keyup', syncHeadingSelect);
 }
 
 function flushPendingEdit() {
