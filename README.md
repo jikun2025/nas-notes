@@ -49,8 +49,12 @@
 
 - 前端与 PWA **共用同一份 `static/`**（Gradle 直接把仓库根目录的 `static/` 挂为 assets），代码零复制零改动；壳里仅额外注入一个 `assets/_bridge.js`（劫持 `fetch('/api/*')` → 原生转发、blob 下载 → 原生保存、设置页注入服务器地址行）。
 - 页面挂在 WebView 虚拟安全域 `https://appassets.androidplatform.net/` 下，`crypto.subtle`、IndexedDB、localStorage 全部可用——**APK 不要求 NAS 提供 HTTPS**；原生层只转发密文，不接触明文。
+- 加载有两层：先走虚拟域（`loadUrl`，origin 最标准）；若主文档没拿到或首屏 2.2 秒后仍是空白，自动降级为「CSS/JS 全部内联进 HTML + `loadDataWithBaseURL`」——有些 WebView/安卓兼容层（例如鸿蒙上的安卓运行环境）不回调 `shouldInterceptRequest`，静态资源会全 404。降级后只有 `/api/` 需要网络，走原生桥。
+- 真出现白屏时，屏幕上会直接摊开诊断信息（WebView 包名与版本、UA、错误级控制台输出），截图即可定位，不用盲猜。
+- 壳内不注册 Service Worker（资源已内联，没有需要缓存的网络请求）。
 - NAS 地址在 App 内「设置 → NAS 服务器」里配置（存原生 SharedPreferences），默认 `http://192.168.5.10:28080`，带连接测试按钮；换端口/域名不必重新打包。
 - 加密备份导出改存到系统「下载/NasNotes」目录；文件选择（插图/导入）与录音麦克风权限走原生桥接。
+- 安装包只有 ~95 KB 是正常的：它是 WebView 壳，不含浏览器内核、Node 或任何运行时，界面全部是仓库里的静态文件。
 
 构建（需 JDK 17 + Android SDK platform 35 / build-tools 35.0.0，注意 `JAVA_HOME` 必须指向 JDK 17）：
 
@@ -190,9 +194,13 @@ node tools/test_md_table_fs.js         # Markdown 表格/字号渲染 22 项
 node tools/test_login_ui.js            # 登录页隐藏字段/清库警示静态回归 7 项
 node tools/test_ui_overhaul.js         # 三区布局/工具栏两行与手机横滑/标题计数与保存/两级设置/右键菜单/分类清单 14 项
 node tools/test_rich_editor.js         # 富文本模式结构 + HTML→Markdown 往返稳定 11 项（含真实浏览器）
+node tools/test_shell_assets.js        # 安卓壳：内联页/MIME 编码/原生桥/打包配置 6 项
+node tools/test_shell_page.js          # 安卓壳内联页真实浏览器渲染 + 桥接 3 项
 ```
 
 `test_rich_editor.js` 会启动一个临时本地静态服务，再用系统自带 Edge/Chrome 的 headless 模式跑 `tools/rich-fixture.html`：把 16 组 Markdown 渲染成 DOM，序列化回 Markdown，再渲染一遍，要求两次 HTML 完全一致（含代码块、表格、任务列表、图片占位、字号包裹）。找不到浏览器时该用例自动跳过。
+
+`test_shell_assets.js` 是纯静态检查：它盯着几个曾经真出过事的地方——`WebResourceResponse` 的第二个参数是字符编码而不是 MIME 子类型（写成 `("text","html")` 会让 WebView 把首页当纯文本，手机上一片白）、内联替换串必须和 `static/index.html` 的标签逐一对应、原生桥要把 headers 的 JSON 文本解析成对象。
 
 后端 API 测试覆盖：登录/会话、密文读写、冲突裁决、软删除、改密原子性与旧会话撤销、登录限速、静态穿越；前端用 Node 内置 `crypto` 验证 AES-GCM 往返与错误口令拒绝。
 

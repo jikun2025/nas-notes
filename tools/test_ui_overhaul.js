@@ -179,8 +179,8 @@ ok('分类改名/删除按钮不再永远隐藏', () => {
   assert.doesNotMatch(block, /const custom =/);
 });
 
-ok('Service Worker 缓存已升版到 v20', () => {
-  assert.match(sw, /const CACHE = 'nas-notes-v20'/);
+ok('Service Worker 缓存已升版到 v21', () => {
+  assert.match(sw, /const CACHE = 'nas-notes-v21'/);
 });
 
 console.log('\nUI overhaul tests: ' + pass + ' pass');

@@ -55,10 +55,19 @@
         window[cb] = function (status, respHeaders, text) {
           clearTimeout(timer);
           delete window[cb];
+          // 原生层传回的是 headers 的 JSON 文本（不是对象），且 status=0 表示网络层失败
+          if (!status) {
+            reject(new TypeError('Failed to fetch（连不上 NAS，请检查设置里的服务器地址与网络）'));
+            return;
+          }
+          var hdrs = {};
           try {
-            resolve(new Response(text, { status: status, headers: respHeaders || {} }));
+            hdrs = typeof respHeaders === 'string' ? JSON.parse(respHeaders) : (respHeaders || {});
+          } catch (e) { hdrs = {}; }
+          try {
+            resolve(new Response(text, { status: status, headers: hdrs }));
           } catch (e) {
-            reject(new TypeError('bad response from native bridge'));
+            reject(new TypeError('bad response from native bridge: ' + e.message));
           }
         };
         try {
@@ -128,7 +137,8 @@
       if (!/^https?:\/\/[^\/\s]+$/.test(v)) { toast('地址格式：http(s)://IP或域名[:端口]'); return; }
       window.NasNative.setServer(v);
       toast('已保存，正在测试连接…');
-      origFetch(ASSET_ORIGIN + '/api/health')
+      // 走被劫持的 fetch，才会真正转发到 NAS（origFetch 会落到虚拟域，永远"成功"）
+      window.fetch(ASSET_ORIGIN + '/api/health')
         .then(function (r) { toast(r.status < 500 ? '连接正常 ✓' : '服务器响应异常(' + r.status + ')'); })
         .catch(function () { toast('连接失败，请检查地址、端口与 NAS 服务状态'); });
     });

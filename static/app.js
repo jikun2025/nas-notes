@@ -3290,7 +3290,9 @@ els.importFile.addEventListener('change', () => {
     toast('本机缓存不可用，离线功能将受影响');
   }
 
-  if ('serviceWorker' in navigator) {
+  // 安卓壳（APK）里静态资源是内联进页面的，没有可缓存的网络资源，
+  // 注册 Service Worker 只会空转并可能缓存旧版本，直接跳过。
+  if ('serviceWorker' in navigator && !window.__NN_SHELL__) {
     navigator.serviceWorker.register('/sw.js').catch((error) => {
       console.warn('[NasNotes] service worker registration failed', error);
     });
