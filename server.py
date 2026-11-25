@@ -169,6 +169,13 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, {"ok": True, "service": "nas-notes", "encrypted": True})
             return
 
+        # 令牌只保护 API。页面与静态资源必须无令牌可加载：否则设了
+        # NOTES_TOKEN 后用户永远进不了「设置」（先有页面才能填令牌），
+        # 且 Service Worker 注册 /sw.js 会 401、PWA 离线失效。数据本身已端到端加密。
+        if not path.startswith("/api/"):
+            self._serve_static(path)
+            return
+
         if not self._require_auth():
             return
 
@@ -192,11 +199,7 @@ class Handler(BaseHTTPRequestHandler):
             self._send_json(200, transaction(op))
             return
 
-        if path.startswith("/api/"):
-            self._send_json(404, {"error": "not found"})
-            return
-
-        self._serve_static(path)
+        self._send_json(404, {"error": "not found"})
 
     def do_PUT(self):
         parsed = urllib.parse.urlparse(self.path)
