@@ -25,7 +25,10 @@ DB_PATH = os.path.join(DATA_DIR, "notes.db")
 
 ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,64}$")
 MAX_IV = 128
-MAX_PAYLOAD = 600000
+# 单条便签密文上限：预留图片/录音 base64（约 8 MiB 原始内容）。
+MAX_PAYLOAD = 12 * 1024 * 1024
+# 整个请求体上限，略大于 MAX_PAYLOAD，防止超大请求占用内存。
+MAX_BODY = 14 * 1024 * 1024
 META_VERSION = 1
 
 
@@ -126,6 +129,21 @@ class Handler(BaseHTTPRequestHandler):
         try:
             length = int(self.headers.get("Content-Length") or 0)
         except ValueError:
+            return None
+        if length < 0:
+            return None
+        if length > MAX_BODY:
+            if length > 64 * 1024 * 1024:
+                # 异常巨大的请求体：不读完，直接关闭连接。
+                self.close_connection = True
+                return None
+            # 先把请求体读完再拒绝，否则客户端仍在发送时连接会被重置。
+            remaining = length
+            while remaining > 0:
+                chunk = self.rfile.read(min(65536, remaining))
+                if not chunk:
+                    break
+                remaining -= len(chunk)
             return None
         raw = self.rfile.read(length) if length > 0 else b""
         if not raw:
@@ -235,9 +253,12 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         iv = str(payload.get("iv") or "")[:MAX_IV]
-        ciphertext = str(payload.get("payload") or "")[:MAX_PAYLOAD]
+        ciphertext = str(payload.get("payload") or "")
         if not iv or not ciphertext:
             self._send_json(400, {"error": "iv and payload are required"})
+            return
+        if len(ciphertext) > MAX_PAYLOAD:
+            self._send_json(413, {"error": "note payload too large"})
             return
         updated_at = str(payload.get("updated_at") or now_iso())[:40]
         device = str(payload.get("device") or "")[:64]

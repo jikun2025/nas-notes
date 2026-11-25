@@ -54,7 +54,14 @@
         <button id="deleteBtn" class="danger" type="button" hidden>删除</button>
       </div>
       <input id="titleInput" class="title-input" type="text" maxlength="200" placeholder="标题" aria-label="标题">
-      <textarea id="bodyInput" class="body-input" placeholder="开始写点什么…" aria-label="正文"></textarea>
+      <div id="bodyInput" class="body-input" contenteditable="true" role="textbox" aria-multiline="true" aria-label="正文" data-placeholder="开始写点什么…"></div>
+      <div class="attachment-bar">
+        <button id="imageBtn" class="ghost small" type="button" title="图片插入正文光标位置（自动压缩加密）">🖼 在正文中插入图片</button>
+        <button id="recordBtn" class="ghost small" type="button" title="录制语音">🎤 <span id="recordLabel">录音</span></button>
+        <span id="attachCount" class="muted tiny inline"></span>
+        <input id="imageInput" type="file" accept="image/*" multiple hidden>
+      </div>
+      <div id="attachmentList" class="attachment-list" aria-label="录音列表"></div>
       <div class="editor-foot"><span id="saveState">已锁定</span></div>
     </main>
   </div>
@@ -65,6 +72,21 @@
     <input id="tokenInput" type="password" placeholder="留空表示服务端未开启鉴权" autocomplete="off">
     <label for="deviceInput">设备标识（用于同步冲突裁决）</label>
     <input id="deviceInput" type="text" placeholder="自动生成" autocomplete="off">
+
+    <label for="imageQuality">图片压缩强度</label>
+    <select id="imageQuality">
+      <option value="balanced">均衡（推荐，正文文字仍清晰）</option>
+      <option value="clear">清晰（体积更大）</option>
+      <option value="tiny">极小（小字可能变模糊）</option>
+    </select>
+
+    <label for="audioQuality">录音压缩强度</label>
+    <select id="audioQuality">
+      <option value="balanced">均衡（语音清晰，约 32 kbps）</option>
+      <option value="clear">清晰（约 64 kbps）</option>
+      <option value="tiny">极小（约 20 kbps）</option>
+    </select>
+    <p class="muted">压缩在浏览器内完成，设置只保存在本机，不影响已存便签；修改后新插入的图片/录音生效。</p>
 
     <hr>
     <h4>加密备份</h4>

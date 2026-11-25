@@ -145,6 +145,8 @@ mark { background: var(--mark); color: inherit; border-radius: 2px; padding: 0 1
   border: 0;
   outline: 0;
   resize: none;
+  overflow-y: auto;
+  min-height: 160px;
   padding: 8px 24px 24px;
   font-size: 15px;
   line-height: 1.7;
@@ -152,12 +154,139 @@ mark { background: var(--mark); color: inherit; border-radius: 2px; padding: 0 1
   font-family: inherit;
   color: var(--text);
   background: transparent;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
 }
+.body-input:empty::before {
+  content: attr(data-placeholder);
+  color: var(--muted);
+  pointer-events: none;
+}
+.body-input figure.inline-image {
+  position: relative;
+  display: table;
+  margin: 12px 0;
+  max-width: 100%;
+}
+.body-input figure.inline-image img {
+  display: block;
+  max-width: min(100%, 640px);
+  max-height: 480px;
+  border-radius: 10px;
+  background: #f0f2f5;
+  cursor: zoom-in;
+}
+.body-input figcaption {
+  font-size: 12px;
+  color: var(--muted);
+  margin-top: 4px;
+  word-break: break-all;
+}
+.body-input .inline-remove {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  border: 0;
+  background: rgba(20, 25, 35, 0.62);
+  color: #fff;
+  border-radius: 50%;
+  width: 24px;
+  height: 24px;
+  padding: 0;
+  line-height: 1;
+  font-size: 13px;
+}
+.body-input .inline-remove:hover { background: var(--danger); }
 .editor-foot {
   padding: 8px 24px;
   border-top: 1px solid var(--border);
   color: var(--muted);
   font-size: 12px;
+}
+
+/* ---------- 附件 ---------- */
+.attachment-bar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 24px 8px;
+  flex-wrap: wrap;
+}
+button.small { padding: 5px 10px; font-size: 13px; }
+button.recording {
+  color: #fff;
+  background: var(--danger);
+  border-color: var(--danger);
+}
+.inline { margin: 0 0 0 auto; }
+.attachment-list {
+  padding: 0 24px 12px;
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  gap: 10px;
+  max-height: 32vh;
+  overflow-y: auto;
+}
+.attachment-list:empty { display: none; }
+.attachment-card {
+  position: relative;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  overflow: hidden;
+  background: #fafbfc;
+  min-width: 0;
+}
+.attachment-card img,
+.attachment-card audio {
+  display: block;
+  width: 100%;
+  background: #f0f2f5;
+}
+.attachment-card img {
+  max-height: 170px;
+  object-fit: cover;
+  cursor: zoom-in;
+}
+.attachment-card audio { height: 42px; }
+.attachment-info {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  padding: 6px 8px;
+  font-size: 11px;
+  color: var(--muted);
+}
+.attachment-name {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.attachment-remove {
+  border: 0;
+  background: transparent;
+  color: var(--danger);
+  padding: 0 2px;
+  font-size: 13px;
+  line-height: 1;
+}
+.attachment-remove:hover { background: transparent; }
+.image-lightbox {
+  position: fixed;
+  inset: 0;
+  z-index: 300;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 24px;
+  background: rgba(15, 20, 30, 0.86);
+  cursor: zoom-out;
+}
+.image-lightbox[hidden] { display: none; }
+.image-lightbox img {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: 6px;
 }
 
 dialog {
@@ -179,7 +308,18 @@ dialog input {
   font-size: 14px;
   outline: none;
 }
-dialog input:focus { border-color: var(--primary); }
+dialog input:focus, dialog select:focus { border-color: var(--primary); }
+dialog select {
+  width: 100%;
+  padding: 9px 10px;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  font: inherit;
+  font-size: 14px;
+  background: #fff;
+  color: var(--text);
+  outline: none;
+}
 .dialog-actions { display: flex; justify-content: flex-end; gap: 8px; margin-top: 18px; }
 .muted { color: var(--muted); font-size: 12px; line-height: 1.6; }
 
@@ -259,4 +399,6 @@ dialog h4 { margin: 0; font-size: 14px; }
   button.back { display: inline-flex; }
   .title-input { padding: 16px 18px 6px; }
   .body-input { padding: 6px 18px 18px; }
+  .attachment-bar { padding: 0 18px 8px; }
+  .attachment-list { padding: 0 18px 12px; grid-template-columns: repeat(auto-fill, minmax(130px, 1fr)); }
 }

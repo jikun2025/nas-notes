@@ -15,6 +15,23 @@ const VAULT_VERSION = 1;
 const PBKDF2_ITERATIONS = 310000;
 const VERIFIER_TEXT = 'nas-notes-vault-v1';
 const BACKUP_FORMAT = 'nas-notes-encrypted-backup-v1';
+const MAX_PLAIN_JSON = 8 * 1024 * 1024;      // 加密前明文 JSON 上限（含附件 base64）
+const MAX_RECORD_MS = 5 * 60 * 1000;         // 单条录音最长 5 分钟
+const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
+const ALLOWED_AUDIO_TYPES = ['audio/webm', 'audio/mp4', 'audio/ogg', 'audio/wav'];
+
+// 压缩档位：目标体积是压缩后文件的字节数，迭代缩放/降质直到达标。
+// 含大量文字的图片会强制提高最小边长和质量，避免小字糊掉。
+const IMAGE_PROFILES = {
+  clear: { label: '清晰', maxEdge: 1920, minEdge: 1280, target: 700 * 1024, qualities: [0.82, 0.75, 0.68] },
+  balanced: { label: '均衡', maxEdge: 1440, minEdge: 960, target: 320 * 1024, qualities: [0.74, 0.66, 0.58, 0.5] },
+  tiny: { label: '极小', maxEdge: 1024, minEdge: 640, target: 140 * 1024, qualities: [0.62, 0.54, 0.46, 0.4] }
+};
+const AUDIO_PROFILES = {
+  clear: { label: '清晰', bps: 64000 },
+  balanced: { label: '均衡', bps: 32000 },
+  tiny: { label: '极小', bps: 20000 }
+};
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -39,6 +56,8 @@ const els = {
   settingsDialog: document.getElementById('settingsDialog'),
   tokenInput: document.getElementById('tokenInput'),
   deviceInput: document.getElementById('deviceInput'),
+  imageQuality: document.getElementById('imageQuality'),
+  audioQuality: document.getElementById('audioQuality'),
   exportBtn: document.getElementById('exportBtn'),
   importBtn: document.getElementById('importBtn'),
   importFile: document.getElementById('importFile'),
@@ -50,6 +69,12 @@ const els = {
   titleInput: document.getElementById('titleInput'),
   bodyInput: document.getElementById('bodyInput'),
   saveState: document.getElementById('saveState'),
+  imageBtn: document.getElementById('imageBtn'),
+  imageInput: document.getElementById('imageInput'),
+  recordBtn: document.getElementById('recordBtn'),
+  recordLabel: document.getElementById('recordLabel'),
+  attachCount: document.getElementById('attachCount'),
+  attachmentList: document.getElementById('attachmentList'),
   toast: document.getElementById('toast')
 };
 
@@ -62,10 +87,16 @@ let initMode = false;
 let currentId = null;
 let deviceId = '';
 let token = '';
+let imageQuality = 'balanced';
+let audioQuality = 'balanced';
 let syncing = false;
 let saveTimer = null;
 let syncTimer = null;
 let toastTimer = null;
+let mediaRecorder = null;
+let recordChunks = [];
+let recordTimer = null;
+let recordStartedAt = 0;
 
 // ---------- 工具 ----------
 function genId() {
@@ -74,8 +105,12 @@ function genId() {
 }
 
 function bytesToB64(bytes) {
+  // 分块避免大附件触发栈溢出。
+  const chunk = 0x8000;
   let binary = '';
-  for (let i = 0; i < bytes.length; i += 1) binary += String.fromCharCode(bytes[i]);
+  for (let i = 0; i < bytes.length; i += chunk) {
+    binary += String.fromCharCode.apply(null, bytes.subarray(i, i + chunk));
+  }
   return btoa(binary);
 }
 
@@ -97,6 +132,108 @@ function esc(value) {
   })[ch]);
 }
 
+const INLINE_IMG_RE = /^data:(image\/(?:jpeg|png|webp|gif));base64,([A-Za-z0-9+/=]+)$/i;
+const BODY_CONTAINER_TAGS = new Set([
+  'div', 'p', 'span', 'b', 'strong', 'i', 'em', 'u', 'ul', 'ol', 'li', 'blockquote', 'figcaption'
+]);
+
+function textToBodyHTML(text) {
+  return esc(String(text || '')).replace(/\r?\n/g, '<br>');
+}
+
+function inlineFigureHTML(mime, data, name) {
+  const safeMime = /^image\/(?:jpeg|png|webp|gif)$/i.test(String(mime || ''))
+    ? String(mime).toLowerCase() : 'image/jpeg';
+  const safeData = String(data || '').replace(/[^A-Za-z0-9+/=]/g, '');
+  const label = esc(name || '图片');
+  if (!safeData) return '';
+  return '<figure class="inline-image" contenteditable="false">' +
+    '<img src="data:' + safeMime + ';base64,' + safeData + '" alt="' + label + '" data-inline-image="1">' +
+    '<figcaption>' + label + '</figcaption>' +
+    '<button type="button" class="inline-remove" data-remove-inline="1" title="删除图片">✕</button>' +
+    '</figure><div><br></div>';
+}
+
+function sanitizeBodyHTML(html) {
+  const source = String(html || '');
+  if (!source) return '';
+  let doc;
+  try {
+    doc = new DOMParser().parseFromString('<div id="nn-root">' + source + '</div>', 'text/html');
+  } catch (error) {
+    return textToBodyHTML(source.replace(/<[^>]*>/g, ''));
+  }
+  const root = doc.getElementById('nn-root');
+  if (!root) return '';
+  const output = [];
+  const render = (node, sink) => {
+    if (node.nodeType === 3) { sink.push(esc(node.nodeValue || '')); return; }
+    if (node.nodeType !== 1) return;
+    const tag = node.tagName.toLowerCase();
+    if (['script', 'style', 'iframe', 'object', 'embed', 'link', 'meta'].includes(tag)) return;
+    if (tag === 'br') { sink.push('<br>'); return; }
+    if (tag === 'img') {
+      const match = INLINE_IMG_RE.exec(node.getAttribute('src') || '');
+      if (match) {
+        sink.push('<img src="data:' + match[1] + ';base64,' + match[2] +
+          '" alt="' + esc(node.getAttribute('alt') || '图片') + '" data-inline-image="1">');
+      }
+      return;
+    }
+    if (tag === 'figure' && node.classList.contains('inline-image')) {
+      const img = node.querySelector('img');
+      const match = img && INLINE_IMG_RE.exec(img.getAttribute('src') || '');
+      if (!match) return;
+      const caption = node.querySelector('figcaption');
+      const label = esc((caption && caption.textContent) || img.getAttribute('alt') || '图片');
+      sink.push('<figure class="inline-image" contenteditable="false">' +
+        '<img src="data:' + match[1] + ';base64,' + match[2] + '" alt="' + label +
+        '" data-inline-image="1"><figcaption>' + label + '</figcaption>' +
+        '<button type="button" class="inline-remove" data-remove-inline="1" title="删除图片">✕</button>' +
+        '</figure>');
+      return;
+    }
+    const children = [];
+    Array.from(node.childNodes).forEach((child) => render(child, children));
+    if (BODY_CONTAINER_TAGS.has(tag)) {
+      sink.push('<' + tag + '>' + children.join('') + '</' + tag + '>');
+    } else {
+      sink.push(children.join(''));
+    }
+  };
+  Array.from(root.childNodes).forEach((child) => render(child, output));
+  return output.join('');
+}
+
+function bodyText(plain) {
+  const html = String((plain && plain.body) || '');
+  if (!html) return '';
+  try {
+    const doc = new DOMParser().parseFromString(html, 'text/html');
+    return (doc.body.textContent || '').replace(/\s+/g, ' ').trim();
+  } catch (error) {
+    return html.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim();
+  }
+}
+
+function inlineImageCount(plain) {
+  return (String((plain && plain.body) || '').match(/class="inline-image"/g) || []).length;
+}
+
+function normalizePlain(plain) {
+  if (!plain || typeof plain !== 'object') return plain;
+  if (typeof plain.body !== 'string') plain.body = plain.body == null ? '' : String(plain.body);
+  const attachments = normalizeAttachments(plain.attachments);
+  if (plain.body_format !== 'html') plain.body = textToBodyHTML(plain.body);
+  const figures = attachments.filter((item) => item.kind === 'image')
+    .map((item) => inlineFigureHTML(item.mime, item.data, item.name)).join('');
+  plain.attachments = attachments.filter((item) => item.kind === 'audio');
+  if (figures) plain.body += figures;
+  plain.body_format = 'html';
+  plain.body = sanitizeBodyHTML(plain.body);
+  return plain;
+}
+
 function highlight(value, query) {
   const text = String(value || '');
   if (!query) return esc(text);
@@ -111,6 +248,64 @@ function formatTime(iso) {
   return date.toLocaleString('zh-CN', {
     month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit'
   });
+}
+
+function base64Bytes(data) {
+  return Math.floor(String(data || '').length * 3 / 4);
+}
+
+function formatBytes(bytes) {
+  const n = Math.max(0, Number(bytes) || 0);
+  if (n < 1024) return n + ' B';
+  if (n < 1024 * 1024) return Math.round(n / 1024) + ' KB';
+  return (n / 1024 / 1024).toFixed(1) + ' MB';
+}
+
+let cachedImageMime = '';
+function preferredImageMime() {
+  if (cachedImageMime) return cachedImageMime;
+  try {
+    const canvas = document.createElement('canvas');
+    canvas.width = 1;
+    canvas.height = 1;
+    cachedImageMime = canvas.toDataURL('image/webp').indexOf('data:image/webp') === 0
+      ? 'image/webp' : 'image/jpeg';
+  } catch (error) {
+    cachedImageMime = 'image/jpeg';
+  }
+  return cachedImageMime;
+}
+
+// 粗略判断是否为文字/截图类图片：大面积纯色 + 高频强边缘。
+// 这类图片压缩时会保住更多像素和质量，避免小字看不清。
+function estimateTextHeavy(image) {
+  try {
+    const sw = 200;
+    const sh = Math.max(1, Math.round(sw
+      * (image.naturalHeight || image.height) / (image.naturalWidth || image.width)));
+    const canvas = document.createElement('canvas');
+    canvas.width = sw;
+    canvas.height = sh;
+    const ctx = canvas.getContext('2d', { willReadFrequently: true });
+    ctx.drawImage(image, 0, 0, sw, sh);
+    const data = ctx.getImageData(0, 0, sw, sh).data;
+    const lum = (i) => (data[i] * 299 + data[i + 1] * 587 + data[i + 2] * 114) / 1000;
+    let flat = 0;
+    let edges = 0;
+    let count = 0;
+    for (let y = 1; y < sh; y += 1) {
+      for (let x = 1; x < sw; x += 1) {
+        const i = (y * sw + x) * 4;
+        const value = lum(i);
+        if (value > 235 || value < 70) flat += 1;
+        if (Math.abs(value - lum(i - 4)) > 55) edges += 1;
+        count += 1;
+      }
+    }
+    return count > 0 && flat / count > 0.5 && edges / count > 0.01;
+  } catch (error) {
+    return false;
+  }
 }
 
 function setBadge(text, kind) {
@@ -178,6 +373,401 @@ async function checkVerifier(key, verifier) {
   } catch (error) {
     return false;
   }
+}
+
+// ---------- 附件（明文仅在内存，随便签一起加密） ----------
+function normalizeAttachments(value) {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item) => item && typeof item === 'object'
+    && typeof item.id === 'string' && typeof item.mime === 'string'
+    && typeof item.data === 'string' && item.data.length > 0)
+    .map((item) => ({
+      id: item.id.slice(0, 80),
+      kind: item.kind === 'audio' ? 'audio' : 'image',
+      name: String(item.name || '附件').slice(0, 120),
+      mime: String(item.mime || '').split(';')[0].trim().toLowerCase(),
+      data: item.data,
+      duration: Number(item.duration) || 0,
+      bytes: Number(item.bytes) || base64Bytes(item.data)
+    }));
+}
+
+function blobToDataURL(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.onerror = () => reject(reader.error || new Error('读取文件失败'));
+    reader.readAsDataURL(blob);
+  });
+}
+
+function dataURLParts(dataURL) {
+  // mime 可能带参数，例如 audio/webm;codecs=opus，不能只取到第一个分号。
+  const match = /^data:([^,]+);base64,([\s\S]*)$/.exec(String(dataURL || ''));
+  if (!match) return null;
+  const mime = match[1].split(';')[0].trim().toLowerCase();
+  const data = match[2].replace(/\s/g, '');
+  return mime && data ? { mime, data } : null;
+}
+
+function blobToBase64(blob) {
+  // 直接读字节，绕开 Data URL 中 codecs 参数带来的解析差异。
+  return blob.arrayBuffer().then((buffer) => bytesToB64(new Uint8Array(buffer)));
+}
+
+function audioFileName(mime) {
+  const ext = mime === 'audio/mp4' ? 'm4a'
+    : mime === 'audio/ogg' ? 'ogg'
+      : mime === 'audio/wav' ? 'wav' : 'webm';
+  return '录音-' + new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19) + '.' + ext;
+}
+
+async function compressImage(file) {
+  if (!ALLOWED_IMAGE_TYPES.includes(file.type)) {
+    throw new Error('不支持的图片格式：' + (file.type || '未知'));
+  }
+  if (file.type === 'image/gif') {
+    // 动画 GIF 无法用 canvas 保帧压缩，只做体积限制。
+    if (file.size > 2 * 1024 * 1024) {
+      throw new Error('GIF 无法压缩，请控制在 2 MB 内（建议改用 JPG/PNG/WebP）');
+    }
+    const parts = dataURLParts(await blobToDataURL(file));
+    if (!parts) throw new Error('GIF 读取失败');
+    return { ...parts, kind: 'image', bytes: file.size };
+  }
+
+  const dataURL = await blobToDataURL(file);
+  const image = new Image();
+  await new Promise((resolve, reject) => {
+    image.onload = resolve;
+    image.onerror = () => reject(new Error('图片解码失败'));
+    image.src = dataURL;
+  });
+  const originalWidth = image.naturalWidth || image.width;
+  const originalHeight = image.naturalHeight || image.height;
+  if (!originalWidth || !originalHeight) throw new Error('无法读取图片尺寸');
+
+  const profile = IMAGE_PROFILES[imageQuality] || IMAGE_PROFILES.balanced;
+  const textHeavy = estimateTextHeavy(image);
+  const maxEdge = textHeavy ? Math.max(profile.maxEdge, 1440) : profile.maxEdge;
+  const minEdge = textHeavy ? Math.max(profile.minEdge, 1280) : profile.minEdge;
+  const edges = Array.from(new Set([
+    maxEdge, Math.round((maxEdge + minEdge) / 2), minEdge
+  ]));
+  const mime = preferredImageMime();
+  let best = null;
+
+  for (const edge of edges) {
+    const scale = Math.min(1, edge / Math.max(originalWidth, originalHeight));
+    const width = Math.max(1, Math.round(originalWidth * scale));
+    const height = Math.max(1, Math.round(originalHeight * scale));
+    const canvas = document.createElement('canvas');
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext('2d');
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(image, 0, 0, width, height);
+    for (const quality of profile.qualities) {
+      const parts = dataURLParts(canvas.toDataURL(mime, quality));
+      if (!parts) continue;
+      const bytes = base64Bytes(parts.data);
+      if (!best || bytes < best.bytes) {
+        best = { ...parts, kind: 'image', bytes, width, height };
+      }
+      if (bytes <= profile.target) return best;
+    }
+  }
+  if (!best) throw new Error('图片压缩失败');
+  return best;
+}
+
+function currentPlain() {
+  const plain = plainCache.get(currentId);
+  if (!plain || !cryptoKey) return null;
+  if (!Array.isArray(plain.attachments)) plain.attachments = [];
+  return plain;
+}
+
+function plainSize(plain) {
+  return encoder.encode(JSON.stringify({
+    title: plain.title || '', body: plain.body || '', attachments: plain.attachments || []
+  })).length;
+}
+
+async function addAttachments(items) {
+  const plain = currentPlain();
+  if (!plain) { toast('请先打开一条便签'); return; }
+  let added = 0;
+  let totalBytes = 0;
+  for (const item of items) {
+    if (plain.attachments.length >= 20) { toast('单条便签最多 20 段录音'); break; }
+    if (plainSize(plain) > MAX_PLAIN_JSON) { toast('便签体积已达上限，请删除部分录音'); break; }
+    try {
+      const result = item.kind === 'audio' ? item : await compressImage(item.file || item);
+      if (!result || !result.data) throw new Error('录音编码失败');
+      const bytes = Number(result.bytes) || base64Bytes(result.data);
+      plain.attachments.push({
+        id: genId(),
+        kind: result.kind,
+        name: String(result.name || (result.kind === 'audio' ? '录音' : '图片')).slice(0, 120),
+        mime: result.mime,
+        data: result.data,
+        duration: Number(result.duration) || 0,
+        bytes
+      });
+      totalBytes += bytes;
+      added += 1;
+    } catch (error) {
+      console.warn('[NasNotes] audio attachment failed', error);
+      toast('录音添加失败：' + (error && error.message ? error.message : '未知错误'));
+    }
+  }
+  if (!added) return;
+  renderAttachments();
+  setSaveState('加密中…');
+  const note = notesCache.get(currentId);
+  if (note) await queueUpsert(note);
+  toast(`已添加 ${added} 段录音（${formatBytes(totalBytes)}，已加密）`);
+}
+
+let savedBodyRange = null;
+
+function rememberBodySelection() {
+  const selection = window.getSelection();
+  if (!selection || !selection.rangeCount) return;
+  const node = selection.anchorNode;
+  const element = node && (node.nodeType === 1 ? node : node.parentElement);
+  if (element && els.bodyInput.contains(element)) {
+    savedBodyRange = selection.getRangeAt(0).cloneRange();
+  }
+}
+
+function insertHTMLAtSelection(html) {
+  els.bodyInput.focus();
+  const selection = window.getSelection();
+  selection.removeAllRanges();
+  if (savedBodyRange && els.bodyInput.contains(savedBodyRange.startContainer)) {
+    selection.addRange(savedBodyRange);
+  } else {
+    const range = document.createRange();
+    range.selectNodeContents(els.bodyInput);
+    range.collapse(false);
+    selection.addRange(range);
+  }
+  let inserted = false;
+  try { inserted = document.execCommand('insertHTML', false, html); } catch (error) { inserted = false; }
+  if (!inserted && selection.rangeCount) {
+    const range = selection.getRangeAt(0);
+    range.deleteContents();
+    const fragment = range.createContextualFragment(html);
+    const last = fragment.lastChild;
+    range.insertNode(fragment);
+    if (last) {
+      range.setStartAfter(last);
+      range.collapse(true);
+      selection.removeAllRanges();
+      selection.addRange(range);
+    }
+  }
+  rememberBodySelection();
+}
+
+async function handleImageInput(event) {
+  const files = Array.from(event.target.files || []);
+  event.target.value = '';
+  if (!files.length) return;
+  if (!currentPlain()) { toast('请先打开一条便签'); return; }
+  let added = 0;
+  let totalBytes = 0;
+  for (const file of files) {
+    try {
+      const result = await compressImage(file);
+      if (!result || !result.data) throw new Error('图片编码失败');
+      const figure = inlineFigureHTML(result.mime, result.data, file.name || '图片');
+      if (!figure) throw new Error('图片数据为空');
+      if (encoder.encode(els.bodyInput.innerHTML + figure).length > MAX_PLAIN_JSON) {
+        toast('便签体积已达上限，请删除部分图片');
+        break;
+      }
+      insertHTMLAtSelection(figure);
+      totalBytes += Number(result.bytes) || base64Bytes(result.data);
+      added += 1;
+    } catch (error) {
+      console.warn('[NasNotes] inline image failed', error);
+      toast('图片插入失败：' + (error && error.message ? error.message : '未知错误'));
+    }
+  }
+  if (!added) return;
+  handleEdit();
+  toast(`已在正文中插入 ${added} 张图片（压缩后共 ${formatBytes(totalBytes)}，已加密）`);
+}
+
+function pickAudioMime() {
+  if (typeof MediaRecorder === 'undefined' || !MediaRecorder.isTypeSupported) return '';
+  const candidates = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4', 'audio/ogg;codecs=opus'];
+  return candidates.find((type) => MediaRecorder.isTypeSupported(type)) || '';
+}
+
+function updateRecordUI(recording) {
+  els.recordBtn.classList.toggle('recording', recording);
+  els.recordLabel.textContent = recording ? '停止' : '录音';
+  els.recordBtn.title = recording ? '停止并保存录音' : '录制语音（最长 5 分钟）';
+}
+
+function stopRecording() {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
+}
+
+async function toggleRecording() {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') {
+    stopRecording();
+    return;
+  }
+  if (!navigator.mediaDevices || !navigator.mediaDevices.getUserMedia || typeof MediaRecorder === 'undefined') {
+    toast('当前浏览器不支持录音（需要 HTTPS 或 localhost）');
+    return;
+  }
+  if (!currentPlain()) { toast('请先打开一条便签'); return; }
+
+  try {
+    // 单声道 + 降噪/回声消除，配合低码率 Opus 可显著缩小语音体积。
+    let stream;
+    try {
+      stream = await navigator.mediaDevices.getUserMedia({
+        audio: {
+          channelCount: 1,
+          echoCancellation: true,
+          noiseSuppression: true,
+          autoGainControl: true
+        }
+      });
+    } catch (error) {
+      console.warn('[NasNotes] constrained audio failed, fallback', error);
+      stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+    }
+    const mimeType = pickAudioMime();
+    const profile = AUDIO_PROFILES[audioQuality] || AUDIO_PROFILES.balanced;
+    const options = { audioBitsPerSecond: profile.bps };
+    if (mimeType) options.mimeType = mimeType;
+    mediaRecorder = new MediaRecorder(stream, options);
+    recordChunks = [];
+    const actualMime = mediaRecorder.mimeType || mimeType || 'audio/webm';
+
+    mediaRecorder.ondataavailable = (event) => {
+      if (event.data && event.data.size) recordChunks.push(event.data);
+    };
+    mediaRecorder.onerror = (event) => {
+      console.warn('[NasNotes] MediaRecorder error', event);
+      clearInterval(recordTimer);
+      recordTimer = null;
+      stream.getTracks().forEach((track) => track.stop());
+      updateRecordUI(false);
+      mediaRecorder = null;
+      recordChunks = [];
+      toast('录音编码出错，请重试或换用 Chrome / Edge');
+    };
+
+    mediaRecorder.onstop = async () => {
+      clearInterval(recordTimer);
+      recordTimer = null;
+      stream.getTracks().forEach((track) => track.stop());
+      updateRecordUI(false);
+      mediaRecorder = null;
+      const durationMs = Date.now() - recordStartedAt;
+      const blob = new Blob(recordChunks, { type: actualMime });
+      recordChunks = [];
+      if (!blob.size) { toast('未捕获到声音，请重试'); return; }
+      try {
+        const mime = String(blob.type || actualMime).split(';')[0].trim().toLowerCase();
+        const data = await blobToBase64(blob);
+        if (!data) { toast('录音数据为空，请重试'); return; }
+        await addAttachments([{
+          kind: 'audio',
+          mime,
+          data,
+          name: audioFileName(mime),
+          duration: Math.round(durationMs / 1000),
+          bytes: blob.size
+        }]);
+      } catch (error) {
+        console.warn('[NasNotes] recording encode failed', error);
+        toast('录音编码失败：' + (error && error.message ? error.message : '未知错误'));
+      }
+    };
+
+    mediaRecorder.start(200);
+    recordStartedAt = Date.now();
+    updateRecordUI(true);
+    recordTimer = setInterval(() => {
+      const elapsed = Date.now() - recordStartedAt;
+      els.recordLabel.textContent = '停止 ' + Math.floor(elapsed / 1000) + 's';
+      if (elapsed >= MAX_RECORD_MS) stopRecording();
+    }, 500);
+  } catch (error) {
+    console.warn('[NasNotes] recording failed', error);
+    toast('无法录音：' + (error && error.message ? error.message : '请检查麦克风权限'));
+    updateRecordUI(false);
+  }
+}
+
+function attachmentURL(item) {
+  const allowed = item.kind === 'audio' ? ALLOWED_AUDIO_TYPES : ALLOWED_IMAGE_TYPES;
+  const raw = String(item.mime || '').split(';')[0].trim().toLowerCase();
+  const mime = allowed.includes(raw) ? raw
+    : (raw.startsWith(item.kind === 'audio' ? 'audio/' : 'image/')
+      ? raw : (item.kind === 'audio' ? 'audio/webm' : 'image/jpeg'));
+  return `data:${mime};base64,${item.data}`;
+}
+
+function openLightbox(src) {
+  const overlay = document.createElement('div');
+  overlay.className = 'image-lightbox';
+  const image = document.createElement('img');
+  image.src = src;
+  image.alt = '图片预览';
+  overlay.appendChild(image);
+  overlay.addEventListener('click', () => overlay.remove());
+  document.body.appendChild(overlay);
+}
+
+function renderAttachments() {
+  const plain = plainCache.get(currentId);
+  const items = plain && Array.isArray(plain.attachments) ? plain.attachments : [];
+  els.attachCount.textContent = items.length ? `${items.length} 段录音` : '';
+  if (!items.length) {
+    els.attachmentList.innerHTML = '';
+    return;
+  }
+  els.attachmentList.innerHTML = items.map((item) => {
+    const name = esc(item.name || (item.kind === 'audio' ? '录音' : '图片'));
+    const src = attachmentURL(item);
+    let media;
+    if (item.kind === 'audio') {
+      media = `<audio controls preload="none" src="${src}"></audio>`;
+    } else {
+      media = `<img src="${src}" alt="${name}" class="attachment-thumb" data-lightbox="1">`;
+    }
+    const size = formatBytes(item.bytes || base64Bytes(item.data));
+    const meta = item.kind === 'audio'
+      ? `${item.duration ? item.duration + 's · ' : ''}${size}` : size;
+    return '<div class="attachment-card">' + media +
+      '<div class="attachment-info"><span class="attachment-name">' + name + '</span>' +
+      '<span>' + meta + '</span>' +
+      '<button class="attachment-remove" type="button" data-remove="' + esc(item.id) + '" title="删除附件">✕</button>' +
+      '</div></div>';
+  }).join('');
+}
+
+async function removeAttachment(id) {
+  const plain = currentPlain();
+  if (!plain) return;
+  const before = plain.attachments.length;
+  plain.attachments = plain.attachments.filter((item) => item.id !== id);
+  if (plain.attachments.length === before) return;
+  renderAttachments();
+  const note = notesCache.get(currentId);
+  if (note) await queueUpsert(note);
+  toast('录音已删除');
 }
 
 // ---------- IndexedDB（仅密文） ----------
@@ -351,6 +941,7 @@ async function rebuildPlainCache() {
     try {
       const plain = await decryptJSON(cryptoKey, note.iv, note.payload);
       if (plain && typeof plain.title === 'string' && typeof plain.body === 'string') {
+        normalizePlain(plain);
         plainCache.set(note.id, plain);
       } else {
         failed += 1;
@@ -369,22 +960,31 @@ async function lockApp() {
     const note = notesCache.get(currentId);
     if (note && cryptoKey) await queueUpsert(note);
   }
+  stopRecording();
   cryptoKey = null;
   plainCache.clear();
   currentId = null;
   document.body.classList.remove('show-editor');
   els.titleInput.value = '';
-  els.bodyInput.value = '';
+  els.bodyInput.innerHTML = '';
+  savedBodyRange = null;
+  els.attachmentList.innerHTML = '';
+  els.attachCount.textContent = '';
+  document.querySelectorAll('.image-lightbox').forEach((node) => node.remove());
   showLockScreen('unlock');
 }
 
 // ---------- 本地写入（始终先加密） ----------
 async function queueUpsert(note) {
   if (!cryptoKey) return null;
-  const plain = plainCache.get(note.id) || { title: '', body: '' };
+  const plain = normalizePlain(plainCache.get(note.id) || {
+    title: '', body: '', body_format: 'html', attachments: []
+  });
   const sealed = await encryptJSON(cryptoKey, {
     title: plain.title || '',
-    body: plain.body || ''
+    body: plain.body || '',
+    body_format: 'html',
+    attachments: normalizeAttachments(plain.attachments)
   });
 
   const updated = Object.assign({}, note, {
@@ -468,7 +1068,9 @@ async function sync() {
 
       if (!serverNote.deleted && serverNote.payload) {
         try {
-          plainCache.set(op.id, await decryptJSON(cryptoKey, serverNote.iv, serverNote.payload));
+          const plain = await decryptJSON(cryptoKey, serverNote.iv, serverNote.payload);
+          normalizePlain(plain);
+          plainCache.set(op.id, plain);
         } catch (error) {
           console.warn('[NasNotes] decrypt pushed note failed', op.id, error);
         }
@@ -496,7 +1098,9 @@ async function sync() {
         await idbPut(STORE_NOTES, note);
         if (!note.deleted && note.payload) {
           try {
-            plainCache.set(note.id, await decryptJSON(cryptoKey, note.iv, note.payload));
+            const plain = await decryptJSON(cryptoKey, note.iv, note.payload);
+            normalizePlain(plain);
+            plainCache.set(note.id, plain);
           } catch (error) {
             console.warn('[NasNotes] decrypt pulled note failed', note.id, error);
           }
@@ -534,7 +1138,9 @@ function visibleNotes() {
     }))
     .filter((item) => !query
       || (item.plain.title || '').toLowerCase().includes(query)
-      || (item.plain.body || '').toLowerCase().includes(query))
+      || bodyText(item.plain).toLowerCase().includes(query)
+      || (item.plain.attachments || []).some((att) =>
+        (att.name || '').toLowerCase().includes(query)))
     .sort((a, b) => String(b.note.updated_at).localeCompare(String(a.note.updated_at)));
 }
 
@@ -551,7 +1157,10 @@ function renderList() {
   }
 
   els.noteList.innerHTML = items.map((item) => {
-    const snippet = String(item.plain.body || '').replace(/\s+/g, ' ').slice(0, 80);
+    const images = inlineImageCount(item.plain);
+    const audios = (item.plain.attachments || []).length;
+    const attachmentHint = (images ? ` 🖼${images}` : '') + (audios ? ` 🎤${audios}` : '');
+    const snippet = (bodyText(item.plain).slice(0, 80) || '（空便签）') + attachmentHint;
     return '<button class="note-item' + (item.note.id === currentId ? ' active' : '') +
       '" type="button" data-id="' + esc(item.note.id) + '">' +
       '<div class="item-title">' + highlight(item.plain.title || '（无标题）', query) + '</div>' +
@@ -572,12 +1181,17 @@ function renderEditor() {
   const plain = plainCache.get(currentId);
   if (!plain) {
     els.titleInput.value = '';
-    els.bodyInput.value = '';
+    els.bodyInput.innerHTML = '';
     els.deleteBtn.hidden = true;
+    els.attachCount.textContent = '';
+    els.attachmentList.innerHTML = '';
   } else {
+    normalizePlain(plain);
     els.titleInput.value = plain.title || '';
-    els.bodyInput.value = plain.body || '';
+    els.bodyInput.innerHTML = plain.body || '';
+    savedBodyRange = null;
     els.deleteBtn.hidden = false;
+    renderAttachments();
   }
   updateEditorMeta();
 }
@@ -704,7 +1318,7 @@ els.newBtn.addEventListener('click', () => {
   if (!cryptoKey) return;
   const stamp = new Date().toISOString();
   const id = genId();
-  plainCache.set(id, { title: '', body: '' });
+  plainCache.set(id, { title: '', body: '', body_format: 'html', attachments: [] });
   notesCache.set(id, {
     id, iv: '', payload: '', created_at: stamp,
     updated_at: stamp, deleted: false, device: deviceId
@@ -721,6 +1335,49 @@ els.noteList.addEventListener('click', (event) => {
 els.searchInput.addEventListener('input', renderList);
 els.syncBtn.addEventListener('click', () => { clearTimeout(syncTimer); sync(); });
 
+els.imageBtn.addEventListener('click', () => {
+  if (!currentPlain()) { toast('请先打开一条便签'); return; }
+  rememberBodySelection();
+  els.imageInput.click();
+});
+els.imageInput.addEventListener('change', handleImageInput);
+els.recordBtn.addEventListener('click', toggleRecording);
+document.addEventListener('selectionchange', rememberBodySelection);
+els.bodyInput.addEventListener('paste', (event) => {
+  // 只接受纯文本，避免粘贴 HTML 带入脚本或多余体积。
+  event.preventDefault();
+  const text = (event.clipboardData && event.clipboardData.getData('text/plain')) || '';
+  if (!text) return;
+  const selection = window.getSelection();
+  if (!selection || !selection.rangeCount) return;
+  const range = selection.getRangeAt(0);
+  range.deleteContents();
+  const node = document.createTextNode(text);
+  range.insertNode(node);
+  range.setStartAfter(node);
+  range.collapse(true);
+  selection.removeAllRanges();
+  selection.addRange(range);
+});
+els.bodyInput.addEventListener('click', (event) => {
+  const remove = event.target.closest('[data-remove-inline]');
+  if (remove) {
+    const figure = remove.closest('figure.inline-image');
+    if (figure) {
+      figure.remove();
+      handleEdit();
+      toast('正文图片已删除');
+    }
+    return;
+  }
+  if (event.target.closest('[data-inline-image]')) openLightbox(event.target.src);
+});
+els.attachmentList.addEventListener('click', (event) => {
+  const remove = event.target.closest('[data-remove]');
+  if (remove) { removeAttachment(remove.dataset.remove); return; }
+  if (event.target.closest('[data-lightbox]')) openLightbox(event.target.src);
+});
+
 els.backBtn.addEventListener('click', () => {
   clearTimeout(saveTimer);
   const note = notesCache.get(currentId);
@@ -732,8 +1389,9 @@ els.backBtn.addEventListener('click', () => {
 
 els.deleteBtn.addEventListener('click', async () => {
   if (!currentId) return;
-  if (!window.confirm('确定删除这条便签？删除会同步到 NAS。')) return;
+  if (!window.confirm('确定删除这条便签（含正文图片和录音）？删除会同步到 NAS。')) return;
   clearTimeout(saveTimer);
+  stopRecording();
   await queueDelete(currentId);
   currentId = null;
   document.body.classList.remove('show-editor');
@@ -745,9 +1403,11 @@ els.deleteBtn.addEventListener('click', async () => {
 function handleEdit() {
   const note = notesCache.get(currentId);
   if (!note || !cryptoKey) return;
-  const plain = plainCache.get(currentId) || { title: '', body: '' };
+  const plain = plainCache.get(currentId) || { title: '', body: '', body_format: 'html', attachments: [] };
   plain.title = els.titleInput.value;
-  plain.body = els.bodyInput.value;
+  plain.body = els.bodyInput.innerHTML;
+  plain.body_format = 'html';
+  if (!Array.isArray(plain.attachments)) plain.attachments = [];
   plainCache.set(currentId, plain);
   setSaveState('编辑中…');
   clearTimeout(saveTimer);
@@ -786,14 +1446,20 @@ window.addEventListener('offline', () => {
 els.settingsBtn.addEventListener('click', () => {
   els.tokenInput.value = token;
   els.deviceInput.value = deviceId;
+  els.imageQuality.value = imageQuality;
+  els.audioQuality.value = audioQuality;
   els.settingsDialog.showModal();
 });
 els.cancelSettings.addEventListener('click', () => els.settingsDialog.close());
 els.saveSettings.addEventListener('click', () => {
   token = els.tokenInput.value.trim();
   deviceId = els.deviceInput.value.trim() || genId();
+  imageQuality = IMAGE_PROFILES[els.imageQuality.value] ? els.imageQuality.value : 'balanced';
+  audioQuality = AUDIO_PROFILES[els.audioQuality.value] ? els.audioQuality.value : 'balanced';
   localStorage.setItem('nn-token', token);
   localStorage.setItem('nn-device', deviceId);
+  localStorage.setItem('nn-image-quality', imageQuality);
+  localStorage.setItem('nn-audio-quality', audioQuality);
   els.settingsDialog.close();
   clearTimeout(syncTimer);
   syncTimer = setTimeout(sync, 100);
@@ -814,6 +1480,10 @@ els.importFile.addEventListener('change', () => {
 
   deviceId = localStorage.getItem('nn-device') || genId();
   token = localStorage.getItem('nn-token') || '';
+  imageQuality = localStorage.getItem('nn-image-quality') || 'balanced';
+  audioQuality = localStorage.getItem('nn-audio-quality') || 'balanced';
+  if (!IMAGE_PROFILES[imageQuality]) imageQuality = 'balanced';
+  if (!AUDIO_PROFILES[audioQuality]) audioQuality = 'balanced';
   localStorage.setItem('nn-device', deviceId);
 
   try {
