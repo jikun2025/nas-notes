@@ -49,6 +49,8 @@ const els = {
   confirmLabel: document.getElementById('confirmLabel'),
   confirmInput: document.getElementById('confirmInput'),
   lockError: document.getElementById('lockError'),
+  lockTokenLabel: document.getElementById('lockTokenLabel'),
+  lockTokenInput: document.getElementById('lockTokenInput'),
   unlockBtn: document.getElementById('unlockBtn'),
   syncBadge: document.getElementById('syncBadge'),
   newBtn: document.getElementById('newBtn'),
@@ -849,6 +851,22 @@ function showLockError(message) {
   els.lockError.hidden = false;
 }
 
+// 服务端开了 NOTES_TOKEN 时，锁屏页直接给令牌输入口（设置面板在解锁后才可见，
+// 否则首次初始化 401 会死循环：没页面就没设置，没设置就过不了 401）。
+function showLockTokenInput() {
+  els.lockTokenLabel.hidden = false;
+  els.lockTokenInput.hidden = false;
+  els.lockTokenInput.value = token;
+}
+
+function applyLockToken() {
+  const next = els.lockTokenInput.value.trim();
+  if (next !== token) {
+    token = next;
+    localStorage.setItem('nn-token', token);
+  }
+}
+
 async function fetchMeta() {
   const response = await fetch('/api/meta', { headers: authHeaders() });
   if (response.status === 401) {
@@ -874,6 +892,7 @@ async function fetchMeta() {
 }
 
 async function handleUnlock() {
+  applyLockToken();
   const passphrase = els.passphraseInput.value;
   if (!passphrase) return showLockError('请输入加密口令');
   els.lockError.hidden = true;
@@ -896,7 +915,10 @@ async function handleUnlock() {
       const response = await fetch('/api/meta', {
         method: 'PUT', headers: authHeaders(), body: JSON.stringify(meta)
       });
-      if (response.status === 401) return showLockError('访问令牌不正确，请先在设置中填写');
+      if (response.status === 401) {
+        showLockTokenInput();
+        return showLockError('访问令牌不正确或缺失，请在上方填写后重试');
+      }
       if (response.status === 409) {
         await fetchMeta();
         showLockScreen('unlock');
@@ -1822,6 +1844,7 @@ els.importFile.addEventListener('change', () => {
     await fetchMeta();
   } catch (error) {
     console.warn('[NasNotes] fetch meta failed, use cached', error);
+    if (error && error.message === '访问令牌不正确') showLockTokenInput();
   }
 
   showLockScreen(vaultMeta && vaultMeta.salt ? 'unlock' : 'init');

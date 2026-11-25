@@ -16,6 +16,8 @@
       <div class="lock-logo">轻签</div>
       <h1 id="lockTitle">轻签已锁定</h1>
       <p id="lockHint" class="muted">请输入加密口令。口令只在本机内存中用于解密，不会保存到服务器或浏览器。</p>
+      <label id="lockTokenLabel" for="lockTokenInput" hidden>访问令牌</label>
+      <input id="lockTokenInput" type="password" autocomplete="off" placeholder="服务端开启了访问令牌（NOTES_TOKEN）时填写" hidden>
       <label for="passphraseInput">加密口令</label>
       <input id="passphraseInput" type="password" autocomplete="current-password" placeholder="输入口令">
       <label id="confirmLabel" for="confirmInput" hidden>再次输入口令</label>
