@@ -13,8 +13,7 @@ const STORE_OUT = 'outbox';
 const STORE_META = 'meta';
 const VAULT_VERSION = 1;
 const PBKDF2_ITERATIONS = 310000;
-const VERIFIER_TEXT = 'nas-notes-vault-v1';
-const BACKUP_FORMAT = 'nas-notes-encrypted-backup-v1';
+const BACKUP_FORMAT = 'nas-notes-encrypted-backup-v2';
 const MAX_PLAIN_JSON = 8 * 1024 * 1024;      // 加密前明文 JSON 上限（含附件 base64）
 const MAX_RECORD_MS = 5 * 60 * 1000;         // 单条录音最长 5 分钟
 const ALLOWED_IMAGE_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'image/gif'];
@@ -45,13 +44,14 @@ const els = {
   lockScreen: document.getElementById('lockScreen'),
   lockTitle: document.getElementById('lockTitle'),
   lockHint: document.getElementById('lockHint'),
+  usernameInput: document.getElementById('usernameInput'),
+  passphraseLabel: document.getElementById('passphraseLabel'),
   passphraseInput: document.getElementById('passphraseInput'),
   confirmLabel: document.getElementById('confirmLabel'),
   confirmInput: document.getElementById('confirmInput'),
   lockError: document.getElementById('lockError'),
-  lockTokenLabel: document.getElementById('lockTokenLabel'),
-  lockTokenInput: document.getElementById('lockTokenInput'),
   unlockBtn: document.getElementById('unlockBtn'),
+  resetVaultBtn: document.getElementById('resetVaultBtn'),
   syncBadge: document.getElementById('syncBadge'),
   newBtn: document.getElementById('newBtn'),
   searchInput: document.getElementById('searchInput'),
@@ -61,7 +61,12 @@ const els = {
   lockBtn: document.getElementById('lockBtn'),
   settingsBtn: document.getElementById('settingsBtn'),
   settingsDialog: document.getElementById('settingsDialog'),
-  tokenInput: document.getElementById('tokenInput'),
+  acctNameInput: document.getElementById('acctNameInput'),
+  acctCurrentInput: document.getElementById('acctCurrentInput'),
+  acctNewInput: document.getElementById('acctNewInput'),
+  acctConfirmInput: document.getElementById('acctConfirmInput'),
+  acctError: document.getElementById('acctError'),
+  saveAccount: document.getElementById('saveAccount'),
   deviceInput: document.getElementById('deviceInput'),
   syncMode: document.getElementById('syncMode'),
   syncInterval: document.getElementById('syncInterval'),
@@ -97,13 +102,14 @@ const els = {
 
 const notesCache = new Map();   // id -> 密文便签（可持久化）
 const plainCache = new Map();   // id -> {title, body}（仅内存，绝不持久化）
-let cryptoKey = null;           // CryptoKey，仅内存
-let vaultMeta = null;           // {salt, verifier, iterations, version}
-let needsMetaPush = false;
+let cryptoKey = null;           // 保险库密钥 wkey（CryptoKey），仅内存
+let wkeyBytes = null;           // wkey 原始字节（仅内存，改口令时重新包裹用）
+let sessionToken = '';          // 登录换取的会话令牌（本机 localStorage）
+let accountName = '';           // 当前登录账户名（仅显示用）
+let vaultMeta = null;           // {salt, wrapped, iterations, version}
 let initMode = false;
 let currentId = null;
 let deviceId = '';
-let token = '';
 let imageQuality = 'balanced';
 let audioQuality = 'balanced';
 let syncMode = 'auto';
@@ -322,14 +328,23 @@ function toast(message) {
 
 function authHeaders() {
   const headers = { 'Content-Type': 'application/json' };
-  if (token) headers['X-Token'] = token;
+  if (sessionToken) headers['X-Token'] = sessionToken;
   return headers;
+}
+
+// 会话过期统一处理：清掉登录态，回锁屏（401 code=session 时调用）。
+function handleSessionExpired() {
+  sessionToken = '';
+  localStorage.removeItem('nn-session');
+  if (cryptoKey) lockApp();
+  else showLockScreen(vaultMeta && vaultMeta.salt ? 'unlock' : 'init');
+  showLockError('会话已过期，请重新登录');
 }
 
 // ---------- WebCrypto ----------
 async function deriveKey(passphrase, saltB64, iterations) {
   const material = await crypto.subtle.importKey(
-    'raw', encoder.encode(passphrase), 'PBKDF2', false, ['deriveKey']
+    'raw', encoder.encode(passphrase), 'PBKDF2', false, ['deriveKey', 'deriveBits']
   );
   return crypto.subtle.deriveKey(
     { name: 'PBKDF2', salt: b64ToBytes(saltB64), iterations, hash: 'SHA-256' },
@@ -338,6 +353,19 @@ async function deriveKey(passphrase, saltB64, iterations) {
     false,
     ['encrypt', 'decrypt']
   );
+}
+
+// 登录凭证 credential = PBKDF2-SHA256(口令, login_salt, 100k)：口令明文
+// 从不离开本机，服务端只见到凭证、再对凭证做一层哈希。
+async function deriveCredential(passphrase, saltB64, iterations) {
+  const material = await crypto.subtle.importKey(
+    'raw', encoder.encode(passphrase), 'PBKDF2', false, ['deriveKey', 'deriveBits']
+  );
+  const bits = await crypto.subtle.deriveBits(
+    { name: 'PBKDF2', salt: b64ToBytes(saltB64), iterations, hash: 'SHA-256' },
+    material, 256
+  );
+  return bytesToB64(new Uint8Array(bits));
 }
 
 async function encryptJSON(key, value) {
@@ -355,20 +383,28 @@ async function decryptJSON(key, ivB64, payloadB64) {
   return JSON.parse(decoder.decode(plain));
 }
 
-async function createVerifier(key) {
-  const sealed = await encryptJSON(key, { check: VERIFIER_TEXT });
+// 保险库密钥 wkey：随机生成、真正加密便签的密钥。它用
+// AES-GCM(KDF(登录口令, salt), wkey) 包裹后存入 vault.wrapped——
+// 修改登录口令只需换包裹层，wkey 不变，笔记密文无需重加密。
+function randomWkeyBytes() {
+  return crypto.getRandomValues(new Uint8Array(32));
+}
+
+async function importWkey(wkeyBytes) {
+  return crypto.subtle.importKey('raw', wkeyBytes, 'AES-GCM', false, ['encrypt', 'decrypt']);
+}
+
+async function wrapVault(wrapKey, wkeyBytes) {
+  const sealed = await encryptJSON(wrapKey, { w: bytesToB64(wkeyBytes) });
   return sealed.iv + ':' + sealed.payload;
 }
 
-async function checkVerifier(key, verifier) {
-  try {
-    const parts = String(verifier || '').split(':');
-    if (parts.length !== 2) return false;
-    const value = await decryptJSON(key, parts[0], parts[1]);
-    return value && value.check === VERIFIER_TEXT;
-  } catch (error) {
-    return false;
-  }
+async function unwrapVault(wrapKey, wrapped) {
+  const parts = String(wrapped || '').split(':');
+  if (parts.length !== 2) throw new Error('bad wrapped format');
+  const value = await decryptJSON(wrapKey, parts[0], parts[1]);
+  if (!value || typeof value.w !== 'string') throw new Error('bad wrapped payload');
+  return b64ToBytes(value.w);
 }
 
 // ---------- 附件（明文仅在内存，随便签一起加密） ----------
@@ -829,21 +865,24 @@ async function idbDelete(storeName, key) {
 }
 
 // ---------- 锁屏与加密库 ----------
+const DEFAULT_USERNAME = 'admin';
+
 function showLockScreen(mode) {
   initMode = mode === 'init';
   els.lockScreen.hidden = false;
-  els.lockTitle.textContent = initMode ? '创建加密便签库' : '轻签已锁定';
+  els.lockTitle.textContent = '登录轻签';
   els.lockHint.textContent = initMode
-    ? '首次使用请设置加密口令。便签会在本机加密后才上传，服务器无法读取内容。'
-    : '请输入加密口令。口令只在内存中使用，不会写入服务器或浏览器。';
-  els.confirmLabel.hidden = !initMode;
-  els.confirmInput.hidden = !initMode;
-  els.unlockBtn.textContent = initMode ? '创建加密库' : '解锁';
+    ? '输入账户与登录口令。首次登录后本机将创建加密库；口令只在内存中用于解密，服务器看不到明文。'
+    : '输入账户与登录口令解锁。口令只在本机内存中用于解密，服务器看不到明文。';
+  els.confirmLabel.hidden = true;
+  els.confirmInput.hidden = true;
+  els.unlockBtn.textContent = '登录';
   els.lockError.hidden = true;
+  if (!els.usernameInput.value) els.usernameInput.value = DEFAULT_USERNAME;
   els.passphraseInput.value = '';
   els.confirmInput.value = '';
   setBadge(initMode ? '待初始化' : '未解锁');
-  setTimeout(() => els.passphraseInput.focus(), 0);
+  setTimeout(() => (els.passphraseInput.value ? els.passphraseInput : els.usernameInput).focus(), 0);
 }
 
 function showLockError(message) {
@@ -851,27 +890,37 @@ function showLockError(message) {
   els.lockError.hidden = false;
 }
 
-// 服务端开了 NOTES_TOKEN 时，锁屏页直接给令牌输入口（设置面板在解锁后才可见，
-// 否则首次初始化 401 会死循环：没页面就没设置，没设置就过不了 401）。
-function showLockTokenInput() {
-  els.lockTokenLabel.hidden = false;
-  els.lockTokenInput.hidden = false;
-  els.lockTokenInput.value = token;
-}
-
-function applyLockToken() {
-  const next = els.lockTokenInput.value.trim();
-  if (next !== token) {
-    token = next;
-    localStorage.setItem('nn-token', token);
+// 登录一步到位：取盐 → 本机派生凭证 → POST /api/login → 会话令牌。
+// 返回 true 表示已拿到会话（口令正确）。
+async function loginAccount(username, passphrase) {
+  const saltResp = await fetch('/api/login-salt?username=' + encodeURIComponent(username));
+  if (!saltResp.ok) throw new Error('无法获取登录参数: HTTP ' + saltResp.status);
+  const saltInfo = await saltResp.json();
+  const credential = await deriveCredential(passphrase, saltInfo.salt, saltInfo.iterations || 100000);
+  const resp = await fetch('/api/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, credential })
+  });
+  if (resp.status === 401) return null;
+  if (resp.status === 429) {
+    const body = await resp.json().catch(() => ({}));
+    throw new Error(body.error || '尝试次数过多，请稍后再试');
   }
+  if (!resp.ok) throw new Error('登录失败: HTTP ' + resp.status);
+  const data = await resp.json();
+  sessionToken = data.token || '';
+  accountName = data.username || username;
+  localStorage.setItem('nn-session', JSON.stringify({ token: sessionToken, username: accountName }));
+  localStorage.removeItem('nn-token');   // 旧版令牌残留清理
+  return data;
 }
 
 async function fetchMeta() {
   const response = await fetch('/api/meta', { headers: authHeaders() });
   if (response.status === 401) {
-    setBadge('令牌错误', 'error');
-    throw new Error('访问令牌不正确');
+    handleSessionExpired();
+    throw new Error('会话已过期');
   }
   if (!response.ok) throw new Error('读取加密库信息失败: HTTP ' + response.status);
 
@@ -879,70 +928,88 @@ async function fetchMeta() {
   if (meta.initialized) {
     vaultMeta = {
       salt: meta.salt,
-      verifier: meta.verifier,
+      wrapped: meta.wrapped,
       iterations: meta.iterations,
-      version: meta.version
+      version: meta.version,
+      legacy: Boolean(meta.verifier && !meta.wrapped)
     };
-    needsMetaPush = false;
+    if (vaultMeta.legacy) vaultMeta.verifier = meta.verifier;
     await idbPut(STORE_META, { key: 'vault', value: JSON.stringify(vaultMeta) });
-  } else {
-    needsMetaPush = Boolean(vaultMeta && vaultMeta.salt);
   }
   return meta;
 }
 
 async function handleUnlock() {
-  applyLockToken();
+  const username = (els.usernameInput.value || '').trim() || DEFAULT_USERNAME;
   const passphrase = els.passphraseInput.value;
-  if (!passphrase) return showLockError('请输入加密口令');
+  if (!passphrase) return showLockError('请输入登录口令');
   els.lockError.hidden = true;
   els.unlockBtn.disabled = true;
 
   try {
-    if (initMode) {
-      if (passphrase.length < 8) return showLockError('口令至少需要 8 位');
-      if (passphrase !== els.confirmInput.value) return showLockError('两次输入的口令不一致');
+    const session = await loginAccount(username, passphrase);
+    if (!session) return showLockError('账户或口令不正确');
 
+    await fetchMeta();
+
+    let key = null;
+    if (!vaultMeta || !vaultMeta.salt) {
+      // 服务端还没有加密库：本机生成随机 wkey，用登录口令派生密钥包裹。
       const salt = bytesToB64(crypto.getRandomValues(new Uint8Array(16)));
-      const key = await deriveKey(passphrase, salt, PBKDF2_ITERATIONS);
+      const wrapKey = await deriveKey(passphrase, salt, PBKDF2_ITERATIONS);
+      const newWkey = randomWkeyBytes();
       const meta = {
         salt,
-        verifier: await createVerifier(key),
+        wrapped: await wrapVault(wrapKey, newWkey),
         iterations: PBKDF2_ITERATIONS,
         version: VAULT_VERSION
       };
-
       const response = await fetch('/api/meta', {
         method: 'PUT', headers: authHeaders(), body: JSON.stringify(meta)
       });
-      if (response.status === 401) {
-        showLockTokenInput();
-        return showLockError('访问令牌不正确或缺失，请在上方填写后重试');
-      }
       if (response.status === 409) {
-        await fetchMeta();
-        showLockScreen('unlock');
-        return showLockError('服务端已有加密库，请直接解锁');
+        await fetchMeta();   // 其他设备刚建库，改用它的包裹层
+      } else if (!response.ok) {
+        throw new Error('初始化加密库失败: HTTP ' + response.status);
+      } else {
+        vaultMeta = meta;
+        wkeyBytes = newWkey;
+        key = await importWkey(newWkey);
       }
-      if (!response.ok) throw new Error('初始化失败: HTTP ' + response.status);
-
-      vaultMeta = meta;
-      await idbPut(STORE_META, { key: 'vault', value: JSON.stringify(meta) });
-      cryptoKey = key;
-      needsMetaPush = false;
-    } else {
-      if (!vaultMeta || !vaultMeta.salt) return showLockError('加密库信息缺失，请刷新重试');
-      const key = await deriveKey(passphrase, vaultMeta.salt, vaultMeta.iterations);
-      if (!(await checkVerifier(key, vaultMeta.verifier))) return showLockError('口令不正确');
-      cryptoKey = key;
-
-      if (needsMetaPush) {
-        const response = await fetch('/api/meta', {
-          method: 'PUT', headers: authHeaders(), body: JSON.stringify(vaultMeta)
-        });
-        if (response.ok || response.status === 409) needsMetaPush = false;
+      if (vaultMeta && vaultMeta.salt) {
+        await idbPut(STORE_META, { key: 'vault', value: JSON.stringify(vaultMeta) });
       }
     }
+
+    if (!key) {
+      if (vaultMeta.legacy) {
+        // 旧版加密库（口令派生密钥直接加密笔记，无 wkey 包裹）：
+        // 先用登录口令校验旧库；不一致时补问一次旧版“加密口令”
+        // （旧版登录令牌与加密口令分离，口令可能不同）。
+        let legacyKey = await deriveKey(passphrase, vaultMeta.salt, vaultMeta.iterations);
+        if (!(await checkLegacyVerifier(legacyKey, vaultMeta.verifier))) {
+          const asked = window.prompt('检测到旧版加密库。请输入升级前锁屏里输入的加密口令（留空则放弃迁移）：');
+          if (!asked) return showLockError('需要旧版加密口令才能迁移数据；也可在登录页“清空加密库重新开始”');
+          legacyKey = await deriveKey(asked, vaultMeta.salt, vaultMeta.iterations);
+          if (!(await checkLegacyVerifier(legacyKey, vaultMeta.verifier))) {
+            return showLockError('旧版加密口令不正确，无法迁移。可重试或“清空加密库重新开始”（会丢失数据）');
+          }
+        }
+        // 迁移后统一用当前登录口令包裹（新旧口令就此并轨）
+        key = await migrateLegacyVault(legacyKey, passphrase);
+      } else {
+        const wrapKey = await deriveKey(passphrase, vaultMeta.salt, vaultMeta.iterations);
+        let unlockedWkey;
+        try {
+          unlockedWkey = await unwrapVault(wrapKey, vaultMeta.wrapped);
+        } catch (error) {
+          return showLockError('登录口令与加密库口令不一致，无法解密。可在锁屏页“清空加密库重新开始”（会丢失数据）');
+        }
+        wkeyBytes = unlockedWkey;   // 供改口令时重新包裹（仅内存）
+        key = await importWkey(wkeyBytes);
+      }
+    }
+    cryptoKey = key;
 
     els.lockScreen.hidden = true;
     els.passphraseInput.value = '';
@@ -964,6 +1031,67 @@ async function handleUnlock() {
   } finally {
     els.unlockBtn.disabled = false;
   }
+}
+
+async function checkLegacyVerifier(key, verifier) {
+  try {
+    const parts = String(verifier || '').split(':');
+    if (parts.length !== 2) return false;
+    const value = await decryptJSON(key, parts[0], parts[1]);
+    return Boolean(value && value.check === 'nas-notes-vault-v1');
+  } catch (error) {
+    return false;
+  }
+}
+
+// 旧库（口令密钥直加密）→ 新结构（随机 wkey + 口令包裹）。迁移在本机完成：
+// 全部笔记解密后用 wkey 重加密，再原子替换服务端 vault 包裹并重推密文。
+async function migrateLegacyVault(legacyKey, passphrase) {
+  const salt = bytesToB64(crypto.getRandomValues(new Uint8Array(16)));
+  const wrapKey = await deriveKey(passphrase, salt, PBKDF2_ITERATIONS);
+  const newWkey = randomWkeyBytes();
+  const wkey = await importWkey(newWkey);
+
+  // 逐条解密并用 wkey 重加密（先只更新本机缓存与队列，成功后再提交 vault）
+  const resealed = [];
+  for (const note of notesCache.values()) {
+    if (note.deleted || !note.payload) continue;
+    try {
+      const plain = await decryptJSON(legacyKey, note.iv, note.payload);
+      const sealed = await encryptJSON(wkey, plain);
+      resealed.push(Object.assign({}, note, { iv: sealed.iv, payload: sealed.payload }));
+    } catch (error) {
+      console.warn('[NasNotes] legacy re-encrypt failed', note.id, error);
+    }
+  }
+
+  const meta = {
+    salt,
+    wrapped: await wrapVault(wrapKey, newWkey),
+    iterations: PBKDF2_ITERATIONS,
+    version: VAULT_VERSION,
+    replace: true
+  };
+  const response = await fetch('/api/meta', {
+    method: 'PUT', headers: authHeaders(), body: JSON.stringify(meta)
+  });
+  if (!response.ok) throw new Error('加密库升级失败: HTTP ' + response.status);
+
+  vaultMeta = { salt, wrapped: meta.wrapped, iterations: PBKDF2_ITERATIONS, version: VAULT_VERSION };
+  wkeyBytes = newWkey;   // 供改口令时重新包裹（仅内存）
+  await idbPut(STORE_META, { key: 'vault', value: JSON.stringify(vaultMeta) });
+  for (const note of resealed) {
+    notesCache.set(note.id, note);
+    await idbPut(STORE_NOTES, note);
+    await idbPut(STORE_OUT, {
+      id: note.id,
+      method: 'PUT',
+      payload: { iv: note.iv, payload: note.payload, updated_at: note.updated_at, device: deviceId },
+      queued_at: Date.now()
+    });
+  }
+  toast('加密库已升级为口令包裹结构');
+  return wkey;
 }
 
 async function rebuildPlainCache() {
@@ -996,7 +1124,14 @@ async function lockApp() {
   stopRecording();
   stopAutoSync();
   clearTimeout(syncTimer);
+  if (sessionToken) {
+    // 通知服务端撤销当前会话（失败无所谓，本地令牌随即清掉）
+    fetch('/api/logout', { method: 'POST', headers: authHeaders() }).catch(() => {});
+    sessionToken = '';
+    localStorage.removeItem('nn-session');
+  }
   cryptoKey = null;
+  wkeyBytes = null;
   plainCache.clear();
   currentId = null;
   document.body.classList.remove('show-editor');
@@ -1085,8 +1220,6 @@ async function sync() {
   syncing = true;
   setBadge('同步中…');
   try {
-    if (needsMetaPush) await fetchMeta();
-
     const outbox = await idbGetAll(STORE_OUT);
     outbox.sort((a, b) => a.queued_at - b.queued_at);
 
@@ -1097,8 +1230,7 @@ async function sync() {
         body: JSON.stringify(op.payload || {})
       });
       if (response.status === 401) {
-        setBadge('令牌错误', 'error');
-        toast('访问令牌不正确，请在设置中填写');
+        handleSessionExpired();
         return;
       }
       if (!response.ok) throw new Error('推送失败: HTTP ' + response.status);
@@ -1125,7 +1257,7 @@ async function sync() {
 
     const response = await fetch('/api/notes', { headers: authHeaders() });
     if (response.status === 401) {
-      setBadge('令牌错误', 'error');
+      handleSessionExpired();
       return;
     }
     if (!response.ok) throw new Error('拉取失败: HTTP ' + response.status);
@@ -1383,7 +1515,7 @@ function exportBackup() {
     exported_at: new Date().toISOString(),
     meta: {
       salt: vaultMeta.salt,
-      verifier: vaultMeta.verifier,
+      wrapped: vaultMeta.wrapped,
       iterations: vaultMeta.iterations,
       version: vaultMeta.version
     },
@@ -1422,16 +1554,17 @@ async function importBackup(file) {
     }
 
     if (!vaultMeta || !vaultMeta.salt) {
-      if (!backup.meta || !backup.meta.salt) throw new Error('备份缺少加密参数');
+      if (!backup.meta || !backup.meta.salt || !backup.meta.wrapped) throw new Error('备份缺少加密参数');
       const meta = {
         salt: backup.meta.salt,
-        verifier: backup.meta.verifier,
+        wrapped: backup.meta.wrapped,
         iterations: backup.meta.iterations || PBKDF2_ITERATIONS,
         version: backup.meta.version || VAULT_VERSION
       };
       const response = await fetch('/api/meta', {
         method: 'PUT', headers: authHeaders(), body: JSON.stringify(meta)
       });
+      if (response.status === 401) { handleSessionExpired(); throw new Error('会话已过期'); }
       if (!response.ok && response.status !== 409) throw new Error('写入加密参数失败');
       vaultMeta = meta;
       await idbPut(STORE_META, { key: 'vault', value: JSON.stringify(meta) });
@@ -1455,7 +1588,7 @@ async function importBackup(file) {
           deleted: Boolean(note.deleted)
         })
       });
-      if (response.status === 401) throw new Error('访问令牌不正确');
+      if (response.status === 401) { handleSessionExpired(); throw new Error('会话已过期'); }
       if (response.ok) imported += 1;
       else skipped += 1;
     }
@@ -1478,6 +1611,149 @@ els.passphraseInput.addEventListener('keydown', (event) => {
 });
 els.confirmInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') handleUnlock();
+});
+
+// 忘记口令逃生口：清空服务端加密库与全部密文，本机随之重置。
+els.resetVaultBtn.addEventListener('click', async () => {
+  if (!confirm('确定清空加密库吗？服务器上的全部便签密文将被删除且无法恢复！\n（登录口令本身不变，只是重建加密库。）')) return;
+  if (!confirm('再次确认：删除全部便签数据、重建空加密库？此操作不可撤销。')) return;
+  els.lockError.hidden = true;
+  try {
+    if (!sessionToken) {
+      // 未登录时先验证账户口令再清库，避免任意访客删数据
+      const username = (els.usernameInput.value || '').trim() || DEFAULT_USERNAME;
+      const passphrase = els.passphraseInput.value;
+      if (!passphrase) return showLockError('请先输入账户与登录口令');
+      const session = await loginAccount(username, passphrase);
+      if (!session) return showLockError('账户或口令不正确');
+    }
+    const resp = await fetch('/api/vault', {
+      method: 'DELETE', headers: authHeaders(),
+      body: JSON.stringify({ confirm: 'RESET' })
+    });
+    if (resp.status === 401) { handleSessionExpired(); return; }
+    if (!resp.ok) {
+      const body = await resp.json().catch(() => ({}));
+      return showLockError('清空失败：' + (body.error || ('HTTP ' + resp.status)));
+    }
+    // 清本机：加密库元数据、全部缓存、待发队列
+    vaultMeta = null;
+    cryptoKey = null;
+    wkeyBytes = null;
+    notesCache.clear();
+    plainCache.clear();
+    try {
+      await idbPut(STORE_META, { key: 'vault', value: 'null' });
+      const db = await dbPromise;
+      for (const storeName of [STORE_NOTES, STORE_OUT]) {
+        const tx = db.transaction(storeName, 'readwrite');
+        tx.objectStore(storeName).clear();
+        await new Promise((resolve, reject) => {
+          tx.oncomplete = resolve;
+          tx.onerror = () => reject(tx.error);
+        });
+      }
+    } catch (error) { /* 本机缓存清理失败不影响服务端已清空 */ }
+    showLockScreen('init');
+    showLockError('加密库已清空。重新登录后将创建全新的空加密库。');
+    renderList();
+    renderEditor();
+  } catch (error) {
+    console.warn('[NasNotes] reset vault failed', error);
+    showLockError('清空失败：' + (error && error.message ? error.message : '未知错误'));
+  }
+});
+
+// 设置内自助改账户名/口令：口令换了，加密库包裹层必须在同一请求里原子更换。
+function acctErrorShow(message) {
+  els.acctError.textContent = message;
+  els.acctError.hidden = false;
+}
+
+els.saveAccount.addEventListener('click', async () => {
+  els.acctError.hidden = true;
+  const currentName = accountName;
+  const targetName = (els.acctNameInput.value || '').trim();
+  const currentPass = els.acctCurrentInput.value;
+  const newPass = els.acctNewInput.value;
+  const confirmPass = els.acctConfirmInput.value;
+  if (!sessionToken || !currentName) return acctErrorShow('请先登录');
+  if (!currentPass) return acctErrorShow('修改账户需要先输入当前口令');
+  if (targetName && targetName !== currentName && !/^[A-Za-z0-9_.\-\u4e00-\u9fff]{1,64}$/.test(targetName)) {
+    return acctErrorShow('账户名只能包含中英文、数字、._-（最长 64）');
+  }
+  if (newPass) {
+    if (newPass.length < 8) return acctErrorShow('新口令至少 8 位');
+    if (newPass !== confirmPass) return acctErrorShow('两次输入的新口令不一致');
+    if (!cryptoKey || !wkeyBytes || !vaultMeta || !vaultMeta.salt) {
+      return acctErrorShow('改口令需要先解锁（要重新包裹加密库）。请先在登录页登录后再来设置。');
+    }
+  }
+  els.saveAccount.disabled = true;
+  try {
+    // 当前口令 → 当前 login_salt → current_credential
+    const saltResp = await fetch('/api/login-salt?username=' + encodeURIComponent(currentName));
+    if (!saltResp.ok) throw new Error('无法获取登录参数');
+    const saltInfo = await saltResp.json();
+    const currentCredential = await deriveCredential(currentPass, saltInfo.salt, saltInfo.iterations || 100000);
+
+    const body = { username: targetName || currentName, current_credential: currentCredential };
+
+    if (newPass) {
+      // 新 login_salt（随机）→ new_credential；同时用新口令重包裹 wkey
+      const newLoginSaltBytes = crypto.getRandomValues(new Uint8Array(16));
+      const newLoginSalt = bytesToB64(newLoginSaltBytes);
+      body.new_credential = await deriveCredential(newPass, newLoginSalt, saltInfo.iterations || 100000);
+      body.new_login_salt = newLoginSalt;
+
+      const newWrapSalt = bytesToB64(crypto.getRandomValues(new Uint8Array(16)));
+      const newWrapKey = await deriveKey(newPass, newWrapSalt, PBKDF2_ITERATIONS);
+      body.vault = {
+        salt: newWrapSalt,
+        wrapped: await wrapVault(newWrapKey, wkeyBytes),
+        iterations: PBKDF2_ITERATIONS,
+        version: VAULT_VERSION
+      };
+    }
+
+    const resp = await fetch('/api/account', {
+      method: 'PUT', headers: authHeaders(), body: JSON.stringify(body)
+    });
+    if (resp.status === 401) { handleSessionExpired(); throw new Error('会话已过期，请重新登录'); }
+    const result = await resp.json().catch(() => ({}));
+    if (!resp.ok) throw new Error(result.error || ('HTTP ' + resp.status));
+
+    // 服务端已撤销全部旧会话：本机清掉会话，用新账户/新口令重新登录
+    sessionToken = '';
+    localStorage.removeItem('nn-session');
+    if (newPass) {
+      vaultMeta = {
+        salt: body.vault.salt,
+        wrapped: body.vault.wrapped,
+        iterations: PBKDF2_ITERATIONS,
+        version: VAULT_VERSION
+      };
+      await idbPut(STORE_META, { key: 'vault', value: JSON.stringify(vaultMeta) });
+    }
+    accountName = result.username || targetName || currentName;
+
+    const nextPass = newPass || currentPass;
+    const relogged = await loginAccount(accountName, nextPass);
+    if (!relogged) throw new Error('修改成功但自动重新登录失败，请在登录页手动登录');
+
+    els.acctCurrentInput.value = '';
+    els.acctNewInput.value = '';
+    els.acctConfirmInput.value = '';
+    els.acctNameInput.value = accountName;
+    els.settingsDialog.close();
+    toast(newPass ? '账户口令已更新，加密库已用新口令重新保护' : '账户名已更新');
+    if (cryptoKey && syncMode === 'auto') triggerSync(200);
+  } catch (error) {
+    console.warn('[NasNotes] account change failed', error);
+    acctErrorShow('保存失败：' + (error && error.message ? error.message : '未知错误'));
+  } finally {
+    els.saveAccount.disabled = !sessionToken;
+  }
 });
 
 els.lockBtn.addEventListener('click', () => { lockApp(); });
@@ -1812,25 +2088,42 @@ window.addEventListener('offline', () => {
   if (cryptoKey) setBadge('离线', 'offline');
 });
 
-els.settingsBtn.addEventListener('click', () => {
-  els.tokenInput.value = token;
+els.settingsBtn.addEventListener('click', async () => {
   els.deviceInput.value = deviceId;
   els.syncMode.value = syncMode;
   els.syncInterval.value = String(syncIntervalSec);
   els.imageQuality.value = imageQuality;
   els.audioQuality.value = audioQuality;
+  els.acctNameInput.value = accountName;
+  els.acctCurrentInput.value = '';
+  els.acctNewInput.value = '';
+  els.acctConfirmInput.value = '';
+  els.acctError.hidden = true;
+  els.saveAccount.disabled = !sessionToken;
   els.settingsDialog.showModal();
+  if (sessionToken) {
+    // 服务端为准刷新账户名（改名后其他设备同步显示）
+    try {
+      const resp = await fetch('/api/account', { headers: authHeaders() });
+      if (resp.status === 401) { handleSessionExpired(); return; }
+      if (resp.ok) {
+        const data = await resp.json();
+        if (data.username) {
+          accountName = data.username;
+          els.acctNameInput.value = accountName;
+        }
+      }
+    } catch (error) { /* 离线时保持本机记录 */ }
+  }
 });
 els.cancelSettings.addEventListener('click', () => els.settingsDialog.close());
 els.saveSettings.addEventListener('click', () => {
-  token = els.tokenInput.value.trim();
   deviceId = els.deviceInput.value.trim() || genId();
   const nextMode = els.syncMode.value === 'manual' ? 'manual' : 'auto';
   const rawInterval = els.syncInterval.value;
   const nextInterval = normalizeSyncInterval(rawInterval);
   imageQuality = IMAGE_PROFILES[els.imageQuality.value] ? els.imageQuality.value : 'balanced';
   audioQuality = AUDIO_PROFILES[els.audioQuality.value] ? els.audioQuality.value : 'balanced';
-  localStorage.setItem('nn-token', token);
   localStorage.setItem('nn-device', deviceId);
   localStorage.setItem('nn-sync-mode', nextMode);
   localStorage.setItem('nn-sync-interval', String(nextInterval));
@@ -1870,7 +2163,14 @@ els.importFile.addEventListener('change', () => {
   try { indexedDB.deleteDatabase(LEGACY_DB_NAME); } catch (error) { /* ignore */ }
 
   deviceId = localStorage.getItem('nn-device') || genId();
-  token = localStorage.getItem('nn-token') || '';
+  try {
+    const sessionRaw = JSON.parse(localStorage.getItem('nn-session') || 'null');
+    if (sessionRaw && sessionRaw.token) {
+      sessionToken = sessionRaw.token;
+      accountName = sessionRaw.username || '';
+    }
+  } catch (error) { /* 旧数据或损坏，按未登录处理 */ }
+  localStorage.removeItem('nn-token');   // 旧版令牌残留清理
   syncMode = localStorage.getItem('nn-sync-mode') === 'manual' ? 'manual' : 'auto';
   syncIntervalSec = normalizeSyncInterval(localStorage.getItem('nn-sync-interval') || SYNC_INTERVAL_DEFAULT);
   imageQuality = localStorage.getItem('nn-image-quality') || 'balanced';
@@ -1896,11 +2196,19 @@ els.importFile.addEventListener('change', () => {
     });
   }
 
-  try {
-    await fetchMeta();
-  } catch (error) {
-    console.warn('[NasNotes] fetch meta failed, use cached', error);
-    if (error && error.message === '访问令牌不正确') showLockTokenInput();
+  if (sessionToken) {
+    try {
+      await fetchMeta();
+    } catch (error) {
+      console.warn('[NasNotes] fetch meta failed, use cached', error);
+    }
+    // 有会话令牌时先验证它还有效（服务器重启后会失效），有效才可直接进登录页等待解锁
+    if (sessionToken) {
+      try {
+        const resp = await fetch('/api/notes', { headers: authHeaders() });
+        if (resp.status === 401) handleSessionExpired();
+      } catch (error) { /* 离线时保留会话，联网后再验证 */ }
+    }
   }
 
   showLockScreen(vaultMeta && vaultMeta.salt ? 'unlock' : 'init');

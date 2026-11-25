@@ -11,9 +11,10 @@ services:
     environment:
       PORT: "8080"
       DATA_DIR: "/data"
-      # 建议生成随机字符串，例如：openssl rand -hex 24
-      # 页面「设置」里填写同一个令牌即可；此令牌只保护 API，不用于加密便签内容
-      NOTES_TOKEN: "${NOTES_TOKEN:-change-me}"
+      # 账户引导（可选）：不设则默认账户 admin / admin。
+      # 仅首次初始化数据库时生效，之后请在网页「设置」里修改。
+      # NOTES_USER: "myname"
+      # NOTES_PASS: "初始口令"
       TZ: "Asia/Shanghai"
     volumes:
       - ./data:/data

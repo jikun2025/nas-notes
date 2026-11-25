@@ -103,11 +103,12 @@ gcmInterop(17, '17B'); gcmInterop(1000, '1000B'); gcmInterop(100000, '100KB');
   vm.createContext(sandbox);
   vm.runInContext(SRC, sandbox);
   const sub = sandbox.crypto.subtle;
-  ok('subtle installed in sandbox', !!sub && typeof sub.importKey === 'function' && typeof sub.deriveKey === 'function');
+  ok('subtle installed in sandbox', !!sub && typeof sub.importKey === 'function' && typeof sub.deriveKey === 'function'
+      && typeof sub.deriveBits === 'function');
   const run = vm.runInContext(`(async () => {
     const enc = new TextEncoder();
     const salt = crypto.getRandomValues(new Uint8Array(16));
-    const m = await crypto.subtle.importKey('raw', enc.encode('口令pw'), 'PBKDF2', false, ['deriveKey']);
+    const m = await crypto.subtle.importKey('raw', enc.encode('口令pw'), 'PBKDF2', false, ['deriveKey','deriveBits']);
     const key = await crypto.subtle.deriveKey({ name: 'PBKDF2', salt, iterations: 310000, hash: 'SHA-256' }, m, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
     const iv = crypto.getRandomValues(new Uint8Array(12));
     const ct = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, key, enc.encode('hello 轻签 payload'));
@@ -124,6 +125,61 @@ gcmInterop(17, '17B'); gcmInterop(1000, '1000B'); gcmInterop(100000, '100KB');
   d.setAuthTag(cbuf.subarray(cbuf.length - 16));
   const plain = Buffer.concat([d.update(cbuf.subarray(0, cbuf.length - 16)), d.final()]).toString('utf8');
   ok('interop node decrypts sandbox ct', plain === 'hello 轻签 payload');
+
+  // ---- 登录凭证 deriveBits（deriveCredential 依赖）----
+  const credRun = await vm.runInContext(`(async () => {
+    const enc = new TextEncoder();
+    const lsalt = crypto.getRandomValues(new Uint8Array(16));
+    const m = await crypto.subtle.importKey('raw', enc.encode('admin'), 'PBKDF2', false, ['deriveKey','deriveBits']);
+    const bits = await crypto.subtle.deriveBits({ name: 'PBKDF2', salt: lsalt, iterations: 100000, hash: 'SHA-256' }, m, 256);
+    return { lsalt, cred: new Uint8Array(bits) };
+  })()`, sandbox);
+  const cref = nodeCrypto.pbkdf2Sync('admin', Buffer.from(credRun.lsalt), 100000, 32, 'sha256');
+  ok('deriveBits credential == node pbkdf2', Buffer.from(credRun.cred).equals(cref));
+
+  // ---- importKey('raw', AES-GCM) + wrap/unwrap 全链路（wkey 包裹）----
+  const wrapRun = await vm.runInContext(`(async () => {
+    const enc = new TextEncoder(), dec = new TextDecoder();
+    const b64 = (b) => Buffer.from(b).toString('base64');
+    const unb64 = (s) => new Uint8Array(Buffer.from(s, 'base64'));
+    // 派生 wrapKey（口令侧）
+    const salt = crypto.getRandomValues(new Uint8Array(16));
+    const m = await crypto.subtle.importKey('raw', enc.encode('newpass'), 'PBKDF2', false, ['deriveKey']);
+    const wrapKey = await crypto.subtle.deriveKey({ name:'PBKDF2', salt, iterations: 310000, hash:'SHA-256' }, m, { name:'AES-GCM', length:256 }, false, ['encrypt','decrypt']);
+    // 随机 wkey，用 importKey('raw', AES-GCM) 导入成可加密密钥
+    const wkeyBytes = crypto.getRandomValues(new Uint8Array(32));
+    const wkey = await crypto.subtle.importKey('raw', wkeyBytes, 'AES-GCM', false, ['encrypt','decrypt']);
+    // 用 wkey 加密一条便签
+    const iv1 = crypto.getRandomValues(new Uint8Array(12));
+    const noteCt = await crypto.subtle.encrypt({ name:'AES-GCM', iv: iv1 }, wkey, enc.encode(JSON.stringify({title:'t',body:'b'})));
+    // 用 wrapKey 包裹 wkey
+    const iv2 = crypto.getRandomValues(new Uint8Array(12));
+    const wrapped = await crypto.subtle.encrypt({ name:'AES-GCM', iv: iv2 }, wrapKey, enc.encode(JSON.stringify({ w: b64(wkeyBytes) })));
+    // 解包裹 → 重新 importKey → 解密便签
+    const unwrappedBuf = await crypto.subtle.decrypt({ name:'AES-GCM', iv: iv2 }, wrapKey, wrapped);
+    const obj = JSON.parse(dec.decode(unwrappedBuf));
+    const wkeyBytes2 = unb64(obj.w);
+    const wkey2 = await crypto.subtle.importKey('raw', wkeyBytes2, 'AES-GCM', false, ['encrypt','decrypt']);
+    const notePt = await crypto.subtle.decrypt({ name:'AES-GCM', iv: iv1 }, wkey2, noteCt);
+    return { salt, notePt: dec.decode(notePt), wkeyBytes, wrapped, iv2 };
+  })()`, sandbox);
+  ok('wkey wrap/unwrap roundtrip', wrapRun.notePt === JSON.stringify({title:'t',body:'b'}));
+  // Node 侧：用口令派生 wrapKey 解 wrapped，拿到 wkey，再解 noteCt——与沙箱完全互操作
+  {
+    const wrapKeyRef = nodeCrypto.pbkdf2Sync('newpass', Buffer.from(wrapRun.salt), 310000, 32, 'sha256');
+    const wbuf = Buffer.from(wrapRun.wrapped);
+    const dd = nodeCrypto.createDecipheriv('aes-256-gcm', wrapKeyRef, Buffer.from(wrapRun.iv2));
+    dd.setAuthTag(wbuf.subarray(wbuf.length - 16));
+    const unwrappedJson = Buffer.concat([dd.update(wbuf.subarray(0, wbuf.length - 16)), dd.final()]).toString('utf8');
+    const wkeyFromNode = Buffer.from(JSON.parse(unwrappedJson).w, 'base64');
+    ok('wkey bytes match node unwrap', wkeyFromNode.equals(Buffer.from(wrapRun.wkeyBytes)));
+  }
+  // importKey 错误长度必须拒绝
+  let importThrew = false;
+  try { await vm.runInContext(`crypto.subtle.importKey('raw', new Uint8Array(16), 'AES-GCM', false, ['encrypt'])`, sandbox); }
+  catch (e) { importThrew = true; }
+  ok('importKey AES-GCM rejects short key', importThrew);
+
   // 原生环境不装载守卫
   const sandbox2 = { crypto: { subtle: { importKey() {} } }, console };
   sandbox2.globalThis = sandbox2;

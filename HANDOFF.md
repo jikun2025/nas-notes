@@ -14,10 +14,10 @@
 Windows Git Bash，在仓库根目录执行：
 
 ```bash
-PORT=18767 DATA_DIR=/tmp/nas-notes-local STATIC_DIR="$PWD/static" NOTES_TOKEN="" python server.py
+PORT=18767 DATA_DIR=/tmp/nas-notes-local STATIC_DIR="$PWD/static" python server.py
 ```
 
-`server.py` 默认 `DATA_DIR=/data`，本地必须覆盖。首次打开设置至少 8 位加密口令。
+`server.py` 默认 `DATA_DIR=/data`，本地必须覆盖。默认账户 admin / admin（`NOTES_USER`/`NOTES_PASS` 可覆盖初始账户，仅首次建库生效）；首次登录后在网页「设置」中改口令，登录口令同时用于解锁加密库。
 
 ## 接手提示词
 
@@ -35,8 +35,13 @@ PORT=18767 DATA_DIR=/tmp/nas-notes-local STATIC_DIR="$PWD/static" NOTES_TOKEN=""
 
 ```bash
 python -m py_compile server.py
-node --check static/app.js && node --check static/sw.js
+node --check static/app.js && node --check static/sw.js && node --check static/cryptofb.js
 curl -s http://127.0.0.1:18767/api/health
+
+python tools/test_auth_api.py          # 账户/会话/改密/限速/穿越 37 项
+node tools/test_cryptofb.js            # crypto 兜底层字节级互操作 49 项
+node tools/test_legacy_migration.js    # 旧库→wkey 包裹 端到端迁移 16 项
+node tools/test_md_table_fs.js         # Markdown 表格/字号渲染 22 项
 ```
 
-再测 `/api/meta` 初始化、便签密文写入读回、锁定/解锁后搜索。详细文档见 `README.md` 与 `SECURITY.md`。
+再测登录（login-salt→credential）、`/api/meta` 初始化、便签密文写入读回、锁定/解锁后搜索。详细文档见 `README.md` 与 `SECURITY.md`。

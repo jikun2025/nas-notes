@@ -6,13 +6,8 @@ TARGET_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$TARGET_DIR"
 echo "部署目录: $TARGET_DIR"
 
-if [ ! -f .env ]; then
-  echo "缺少 .env。请先生成随机令牌（任选一种）：" >&2
-  echo "  openssl rand -hex 24" >&2
-  echo "  python3 -c \"import secrets;print(secrets.token_hex(24))\"" >&2
-  echo "然后把结果写入 .env（一行：NOTES_TOKEN=随机串），再重新运行本脚本。" >&2
-  exit 1
-fi
+# 可选账户引导：.env 里可写 NOTES_USER / NOTES_PASS（仅首次建库时生效）。
+# 不设则默认账户 admin / admin，请首次登录后在网页「设置」中修改口令。
 
 # 飞牛自带 Docker；若无 compose v2 插件则退回 docker-compose
 if docker compose version >/dev/null 2>&1; then
@@ -32,5 +27,5 @@ curl -sf http://127.0.0.1:28080/api/health && echo || echo "健康检查未通�
 
 echo "== 完成 =="
 echo "局域网访问: http://$(hostname -I 2>/dev/null | awk '{print $1}' || echo 192.168.5.10):28080"
-echo "访问令牌（填入网页/APP 设置）: 见 .env 里的 NOTES_TOKEN，cat .env 查看"
+echo "默认账户 admin / admin（或 .env 里 NOTES_USER/NOTES_PASS 指定的账户），请首次登录后在网页「设置」中修改口令。"
 echo "提醒：手机浏览器 PWA 与麦克风需要 HTTPS（反代证书）；安卓 APK 壳无需 HTTPS。"

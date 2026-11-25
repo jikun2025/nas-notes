@@ -14,17 +14,17 @@
   <div id="lockScreen" class="lock-screen">
     <div class="lock-card">
       <div class="lock-logo">轻签</div>
-      <h1 id="lockTitle">轻签已锁定</h1>
-      <p id="lockHint" class="muted">请输入加密口令。口令只在本机内存中用于解密，不会保存到服务器或浏览器。</p>
-      <label id="lockTokenLabel" for="lockTokenInput" hidden>访问令牌</label>
-      <input id="lockTokenInput" type="password" autocomplete="off" placeholder="服务端开启了访问令牌（NOTES_TOKEN）时填写" hidden>
-      <label for="passphraseInput">加密口令</label>
+      <h1 id="lockTitle">登录轻签</h1>
+      <p id="lockHint" class="muted">输入账户与登录口令解锁。口令只在本机内存中用于解密，服务器看不到明文。</p>
+      <label for="usernameInput">账户</label>
+      <input id="usernameInput" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="默认 admin">
+      <label id="passphraseLabel" for="passphraseInput">登录口令</label>
       <input id="passphraseInput" type="password" autocomplete="current-password" placeholder="输入口令">
       <label id="confirmLabel" for="confirmInput" hidden>再次输入口令</label>
       <input id="confirmInput" type="password" autocomplete="new-password" placeholder="重复口令" hidden>
       <p id="lockError" class="lock-error" hidden></p>
-      <button id="unlockBtn" class="primary block" type="button">解锁</button>
-      <p class="muted tiny">首次使用需设置至少 8 位口令。口令丢失意味着数据无法恢复。</p>
+      <button id="unlockBtn" class="primary block" type="button">登录</button>
+      <p class="muted tiny">口令丢失无法恢复。忘记口令？<button id="resetVaultBtn" class="linkbtn" type="button">清空加密库重新开始</button></p>
     </div>
   </div>
 
@@ -108,8 +108,20 @@
 
   <dialog id="settingsDialog" aria-label="设置">
     <h3>设置</h3>
-    <label for="tokenInput">访问令牌（服务端设置了 NOTES_TOKEN 时填写）</label>
-    <input id="tokenInput" type="password" placeholder="留空表示服务端未开启鉴权" autocomplete="off">
+    <div class="settings-section">
+      <div class="settings-title">账户</div>
+      <label for="acctNameInput">账户名</label>
+      <input id="acctNameInput" type="text" placeholder="当前账户" autocomplete="username" autocapitalize="none" spellcheck="false">
+      <label for="acctCurrentInput">当前口令</label>
+      <input id="acctCurrentInput" type="password" placeholder="修改前必填" autocomplete="current-password">
+      <label for="acctNewInput">新口令（至少 8 位，留空表示不改）</label>
+      <input id="acctNewInput" type="password" placeholder="留空则不修改口令" autocomplete="new-password">
+      <label for="acctConfirmInput">确认新口令</label>
+      <input id="acctConfirmInput" type="password" placeholder="重复新口令" autocomplete="new-password">
+      <p id="acctError" class="lock-error" hidden></p>
+      <button id="saveAccount" class="primary" type="button" disabled>保存账户修改</button>
+      <p class="muted">登录口令同时用于解密便签：改口令时本机自动重新封装加密库，已有便签不受影响。保存后需重新登录。</p>
+    </div>
     <label for="deviceInput">设备标识（用于同步冲突裁决）</label>
     <input id="deviceInput" type="text" placeholder="自动生成" autocomplete="off">
 

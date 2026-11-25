@@ -406,10 +406,34 @@
   }
 
   function importKey(format, keyData, alg, extractable, keyUsages) {
-    if (format !== 'raw' || alg !== 'PBKDF2') {
+    if (format !== 'raw') {
       return Promise.reject(new Error('unsupported importKey: ' + format + '/' + alg));
     }
-    return Promise.resolve({ __fbk: 'PBKDF2-raw', bytes: toBytes(keyData) });
+    if (alg === 'PBKDF2') {
+      return Promise.resolve({ __fbk: 'PBKDF2-raw', bytes: toBytes(keyData) });
+    }
+    if (alg === 'AES-GCM' || (alg && alg.name === 'AES-GCM')) {
+      // wkey 导入：32 字节原始密钥直接扩展成 AES 轮密钥（GCM 查表在
+      // encrypt/decrypt 里经 lazyGcm 惰性挂上）。
+      var raw = toBytes(keyData);
+      if (raw.length !== 32) return Promise.reject(new Error('importKey: AES-GCM needs 256-bit key'));
+      return Promise.resolve({ __fbk: 'AES-GCM', w: expandKey(raw) });
+    }
+    return Promise.reject(new Error('unsupported importKey: ' + format + '/' + alg));
+  }
+
+  function deriveBits(alg, baseKey, length) {
+    if (!baseKey || baseKey.__fbk !== 'PBKDF2-raw') {
+      return Promise.reject(new Error('deriveBits: invalid base key'));
+    }
+    if (alg.name !== 'PBKDF2' || String(alg.hash).toUpperCase() !== 'SHA-256') {
+      return Promise.reject(new Error('deriveBits: unsupported params'));
+    }
+    if (!length || length % 8 !== 0) {
+      return Promise.reject(new Error('deriveBits: invalid length'));
+    }
+    return pbkdf2Async(baseKey.bytes, toBytes(alg.salt), alg.iterations, length / 8)
+      .then(function (raw) { return raw.buffer; });
   }
 
   function deriveKey(alg, baseKey, derivedKeyAlgorithm, extractable, keyUsages) {
@@ -485,7 +509,7 @@
   // 非安全上下文里 crypto.subtle 是 Crypto.prototype 上的 getter-only 属性，
   // 严格模式下直接赋值会抛 TypeError，必须走 defineProperty。
   if (!g.crypto) g.crypto = {};
-  var subtleImpl = { importKey: importKey, deriveKey: deriveKey, encrypt: encrypt, decrypt: decrypt };
+  var subtleImpl = { importKey: importKey, deriveKey: deriveKey, deriveBits: deriveBits, encrypt: encrypt, decrypt: decrypt };
   try {
     Object.defineProperty(g.crypto, 'subtle', {
       value: subtleImpl, configurable: true, writable: true
