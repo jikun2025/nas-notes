@@ -56,14 +56,22 @@ ok('工具栏字号立即作用于编辑区（不再插入 span 源码）', () =
   assert.doesNotMatch(block, /fsWrap/);
 });
 
-ok('插入表格使用应用内弹窗，不再依赖 prompt', () => {
-  assert.match(html, /id="tableDialog"[^>]*>/);
-  assert.match(html, /id="tableCols"[^>]*type="number"/);
-  assert.match(html, /id="tableRows"[^>]*type="number"/);
+ok('插入表格直接落到正文，不依赖 dialog/prompt（WebView 兼容）', () => {
   const block = app.slice(app.indexOf('function insertTable'), app.indexOf('// 表格增删行列'));
-  assert.match(block, /els\.tableDialog\.showModal\(\)/);
-  assert.doesNotMatch(block, /\bprompt\(/);
+  // 点一下即插入：函数内直接改 textarea，并调用 Markdown 表格生成
+  assert.match(block, /NN_MD\.insertTableMarkdown\(m, n\)/);
+  assert.match(block, /ta\.setSelectionRange\(caret, caret\)/);
+  // 不得再依赖任何弹窗或原生 prompt
+  assert.doesNotMatch(block, /showModal|tableDialog|\bprompt\(/);
+  assert.doesNotMatch(app, /id="tableDialog"/);
   assert.doesNotMatch(app, /window\.prompt\(|window\.confirm\(/);
+  // 工具栏按钮仍绑定到 table
+  assert.match(html, /data-md="table"/);
+  // 所有 dialog.showModal 只能出现在 openDialog 内部，避免老 WebView 静默失败
+  const directCalls = app.match(/els\.\w+Dialog\.showModal\(\)/g) || [];
+  assert.equal(directCalls.length, 0);
+  assert.match(app, /function openDialog\(dialog\)/);
+  assert.match(app, /dialog\.classList\.add\('dialog-fallback'\)/);
 });
 
 ok('便签列表支持右键与长按，菜单含删除/分类', () => {
@@ -109,8 +117,8 @@ ok('分栏预览随输入实时更新，双栏滚动联动', () => {
   assert.match(css, /body\.view-view \.source-pane/);
 });
 
-ok('Service Worker 缓存已升版到 v16', () => {
-  assert.match(sw, /const CACHE = 'nas-notes-v16'/);
+ok('Service Worker 缓存已升版到 v17', () => {
+  assert.match(sw, /const CACHE = 'nas-notes-v17'/);
 });
 
 console.log('\nUI overhaul tests: ' + pass + ' pass');

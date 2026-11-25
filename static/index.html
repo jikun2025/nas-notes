@@ -252,18 +252,6 @@
     <button type="button" role="menuitem" data-action="delete" class="danger-item">🗑 删除便签</button>
   </div>
 
-  <dialog id="tableDialog" class="compact-dialog" aria-label="插入表格">
-    <h3>插入表格</h3>
-    <label for="tableCols">列数（1～20）</label>
-    <input id="tableCols" type="number" min="1" max="20" step="1" value="3" inputmode="numeric">
-    <label for="tableRows">数据行数（不含表头，0～50）</label>
-    <input id="tableRows" type="number" min="0" max="50" step="1" value="2" inputmode="numeric">
-    <div class="dialog-actions">
-      <button id="tableCancel" class="ghost" type="button">取消</button>
-      <button id="tableInsert" class="primary" type="button">插入</button>
-    </div>
-  </dialog>
-
   <dialog id="folderDialog" class="compact-dialog" aria-label="调整分类">
     <h3 id="folderDialogTitle">调整分类</h3>
     <label for="folderDialogSelect">选择分类</label>

@@ -109,11 +109,6 @@ const els = {
   attachCount: document.getElementById('attachCount'),
   attachmentList: document.getElementById('attachmentList'),
   noteContextMenu: document.getElementById('noteContextMenu'),
-  tableDialog: document.getElementById('tableDialog'),
-  tableCols: document.getElementById('tableCols'),
-  tableRows: document.getElementById('tableRows'),
-  tableCancel: document.getElementById('tableCancel'),
-  tableInsert: document.getElementById('tableInsert'),
   folderDialog: document.getElementById('folderDialog'),
   folderDialogTitle: document.getElementById('folderDialogTitle'),
   folderDialogSelect: document.getElementById('folderDialogSelect'),
@@ -1438,6 +1433,52 @@ function renderFolderOptions() {
   }
 }
 
+// 打开弹窗：老版安卓 WebView 的内核可能没有 dialog.showModal()，
+// 直接调用会抛异常并被吞掉，表现为“点了完全没反应”。这里统一兜底。
+function openDialog(dialog) {
+  if (!dialog) return false;
+  if (dialog.open) return true;
+  try {
+    if (typeof dialog.showModal === 'function') {
+      dialog.showModal();
+      return true;
+    }
+  } catch (error) {
+    console.warn('[NasNotes] showModal 不可用，改用降级显示', error);
+  }
+  try {
+    if (typeof dialog.show === 'function') dialog.show();
+    else dialog.setAttribute('open', '');
+    dialog.classList.add('dialog-fallback');
+    document.body.classList.add('dialog-open');
+    return true;
+  } catch (error) {
+    console.warn('[NasNotes] 弹窗打开失败', error);
+    return false;
+  }
+}
+
+function closeDialog(dialog) {
+  if (!dialog) return;
+  try {
+    if (dialog.open && typeof dialog.close === 'function') dialog.close();
+  } catch (error) { /* 忽略：下面会强制移除 open 属性 */ }
+  try { dialog.removeAttribute('open'); } catch (error) { /* 忽略 */ }
+  dialog.classList.remove('dialog-fallback');
+  if (!document.querySelector('dialog[open]')) document.body.classList.remove('dialog-open');
+}
+
+// 降级显示的弹窗没有原生 Esc 关闭，这里补一个
+document.addEventListener('keydown', (event) => {
+  if (event.key !== 'Escape') return;
+  const stack = Array.from(document.querySelectorAll('dialog[open].dialog-fallback'));
+  if (!stack.length) return;
+  const top = stack[stack.length - 1];
+  event.preventDefault();
+  if (typeof top.onclose === 'function') top.onclose();
+  else closeDialog(top);
+});
+
 // 应用内弹窗：安卓 WebView 默认不显示浏览器原生 prompt/confirm。
 function askText(title, initial, label) {
   return new Promise((resolve) => {
@@ -1452,13 +1493,13 @@ function askText(title, initial, label) {
       els.textDialogOk.onclick = null;
       els.textDialogCancel.onclick = null;
       els.textDialog.onclose = null;
-      if (els.textDialog.open) els.textDialog.close();
+      closeDialog(els.textDialog);
       resolve(value === null ? null : String(value).trim());
     };
     els.textDialogOk.onclick = () => finish(els.textDialogInput.value);
     els.textDialogCancel.onclick = () => finish(null);
     els.textDialog.onclose = () => finish(null);
-    els.textDialog.showModal();
+    if (!openDialog(els.textDialog)) { finish(null); return; }
     setTimeout(() => { els.textDialogInput.focus(); els.textDialogInput.select(); }, 0);
   });
 }
@@ -1475,13 +1516,13 @@ function askConfirm(title, message, okLabel) {
       els.confirmOk.onclick = null;
       els.confirmCancel.onclick = null;
       els.confirmDialog.onclose = null;
-      if (els.confirmDialog.open) els.confirmDialog.close();
+      closeDialog(els.confirmDialog);
       resolve(value);
     };
     els.confirmOk.onclick = () => finish(true);
     els.confirmCancel.onclick = () => finish(false);
     els.confirmDialog.onclose = () => finish(false);
-    els.confirmDialog.showModal();
+    if (!openDialog(els.confirmDialog)) { finish(false); }
   });
 }
 
@@ -1901,7 +1942,7 @@ els.saveAccount.addEventListener('click', async () => {
     els.acctNewInput.value = '';
     els.acctConfirmInput.value = '';
     els.acctNameInput.value = accountName;
-    els.settingsDialog.close();
+    closeDialog(els.settingsDialog);
     toast(newPass ? '账户口令已更新，加密库已用新口令重新保护' : '账户名已更新');
     if (cryptoKey && syncMode === 'auto') triggerSync(200);
   } catch (error) {
@@ -2032,7 +2073,7 @@ async function openFolderDialog(id) {
     els.folderDialogSave.onclick = null;
     els.folderDialogCancel.onclick = null;
     els.folderDialog.onclose = null;
-    if (els.folderDialog.open) els.folderDialog.close();
+    closeDialog(els.folderDialog);
     if (!save) return;
     let name = els.folderDialogSelect.value;
     if (name === '__new__') {
@@ -2053,7 +2094,7 @@ async function openFolderDialog(id) {
   els.folderDialogSave.onclick = () => finish(true);
   els.folderDialogCancel.onclick = () => finish(false);
   els.folderDialog.onclose = () => finish(false);
-  els.folderDialog.showModal();
+  if (!openDialog(els.folderDialog)) { toast('无法打开分类弹窗，请刷新页面重试'); }
 }
 
 function syncFolderDialogNew() {
@@ -2155,38 +2196,29 @@ function applyFontSize(size) {
   toast('编辑区字号：' + names[editorFont]);
 }
 
-// 插入表格：应用内弹窗选行列（安卓 WebView 不支持 prompt）。
-function insertTable() {
-  els.tableCols.value = '3';
-  els.tableRows.value = '2';
-  let settled = false;
-  const finish = (ok) => {
-    if (settled) return;
-    settled = true;
-    els.tableInsert.onclick = null;
-    els.tableCancel.onclick = null;
-    els.tableDialog.onclose = null;
-    if (els.tableDialog.open) els.tableDialog.close();
-    if (!ok) return;
-    const rows = Math.max(0, Math.min(50, parseInt(els.tableRows.value, 10) || 0));
-    const cols = Math.max(1, Math.min(20, parseInt(els.tableCols.value, 10) || 3));
-    const ta = els.bodyInput;
-    const start = ta.selectionStart;
-    const before = ta.value.slice(0, start);
-    const pad = before && !/\n\n$/.test(before) ? (/\n$/.test(before) ? '\n' : '\n\n') : '';
-    const block = NN_MD.insertTableMarkdown(rows, cols);
-    const tail = '\n';
-    ta.value = before + pad + block + tail + ta.value.slice(ta.selectionEnd);
-    const caret = start + pad.length + block.length + tail.length;
-    ta.focus();
-    ta.setSelectionRange(caret, caret);
-    handleEdit();
-    toast('已插入 ' + cols + ' 列 × ' + rows + ' 行表格：光标放到表上可用「行/列」按钮增删');
-  };
-  els.tableInsert.onclick = () => finish(true);
-  els.tableCancel.onclick = () => finish(false);
-  els.tableDialog.onclose = () => finish(false);
-  els.tableDialog.showModal();
+// 插入表格：点一下就在光标处插入 3 列 × 2 行，不经过任何弹窗。
+// （旧版依赖 <dialog>，在部分安卓 WebView 上 showModal 不可用，点了毫无反应。）
+// 需要更多行列时，用工具栏的「＋行 / －行 / ＋列 / －列」调整。
+function insertTable(cols = 3, rows = 2) {
+  const ta = els.bodyInput;
+  if (!ta || ta.hidden) { toast('请先打开一条便签'); return; }
+  if (typeof NN_MD === 'undefined' || typeof NN_MD.insertTableMarkdown !== 'function') {
+    toast('表格组件未加载，请刷新页面（强制刷新可清缓存）');
+    return;
+  }
+  const n = Math.max(1, Math.min(20, Number(cols) || 3));
+  const m = Math.max(0, Math.min(50, Number(rows) || 0));
+  const start = ta.selectionStart;
+  const before = ta.value.slice(0, start);
+  const pad = before && !/\n\n$/.test(before) ? (/\n$/.test(before) ? '\n' : '\n\n') : '';
+  const block = NN_MD.insertTableMarkdown(m, n);
+  const tail = '\n';
+  ta.value = before + pad + block + tail + ta.value.slice(ta.selectionEnd);
+  const caret = start + pad.length + block.length + tail.length;
+  ta.focus();
+  ta.setSelectionRange(caret, caret);
+  handleEdit();
+  toast('已插入 ' + n + ' 列 × ' + m + ' 行表格：用 ＋行/－行/＋列/－列 调整');
 }
 
 // 表格增删行列：根据光标所在行/列定位
@@ -2424,7 +2456,7 @@ els.settingsNav.addEventListener('click', (event) => {
   const btn = event.target.closest('[data-settings-panel]');
   if (btn) showSettingsPanel(btn.dataset.settingsPanel);
 });
-els.settingsClose.addEventListener('click', () => els.settingsDialog.close());
+els.settingsClose.addEventListener('click', () => closeDialog(els.settingsDialog));
 
 els.settingsBtn.addEventListener('click', async () => {
   applyTheme(theme);
@@ -2442,7 +2474,7 @@ els.settingsBtn.addEventListener('click', async () => {
   els.acctConfirmInput.value = '';
   els.acctError.hidden = true;
   els.saveAccount.disabled = !sessionToken;
-  els.settingsDialog.showModal();
+  openDialog(els.settingsDialog);
   if (sessionToken) {
     // 服务端为准刷新账户名（改名后其他设备同步显示）
     try {
@@ -2458,7 +2490,7 @@ els.settingsBtn.addEventListener('click', async () => {
     } catch (error) { /* 离线时保持本机记录 */ }
   }
 });
-els.cancelSettings.addEventListener('click', () => els.settingsDialog.close());
+els.cancelSettings.addEventListener('click', () => closeDialog(els.settingsDialog));
 els.saveSettings.addEventListener('click', () => {
   applyTheme(els.themeSelect.value);
   applyEditorFont(els.editorFontSelect.value);
@@ -2479,7 +2511,7 @@ els.saveSettings.addEventListener('click', () => {
   localStorage.setItem('nn-sync-interval', String(nextInterval));
   localStorage.setItem('nn-image-quality', imageQuality);
   localStorage.setItem('nn-audio-quality', audioQuality);
-  els.settingsDialog.close();
+  closeDialog(els.settingsDialog);
 
   const modeChanged = nextMode !== syncMode || nextInterval !== syncIntervalSec;
   syncMode = nextMode;

@@ -89,6 +89,14 @@ var NN_MD = (function () {
     return '|' + cells.join('|') + '|';
   }
 
+  // 重建行时统一补齐空格，避免出现 "|||" 这种没法读的畸形行
+  function padRow(cells) {
+    var parts = cells.map(function (cell) {
+      return String(cell == null ? '' : cell).trim();
+    });
+    return '| ' + parts.join(' | ') + ' |';
+  }
+
   // 生成插入用表格源码（cols 列、rows 条数据行）
   function insertTableMarkdown(rows, cols) {
     var n = Math.max(1, Math.min(20, Math.round(Number(cols) || 3)));
@@ -148,7 +156,7 @@ var NN_MD = (function () {
         var cellsA = splitRow(out[r]);
         while (cellsA.length < ncols) cellsA.push('');
         cellsA.splice(insAt, 0, r === sep ? '---' : '');
-        out[r] = rowLine(cellsA);
+        out[r] = padRow(cellsA);
       }
     } else if (op === 'col-del') {
       if (ncols <= 1) {
@@ -158,13 +166,13 @@ var NN_MD = (function () {
           var cellsD = splitRow(out[r]);
           while (cellsD.length < ncols) cellsD.push('');
           cellsD.splice(colAt, 1);
-          out[r] = rowLine(cellsD);
+          out[r] = padRow(cellsD);
         }
       }
     } else if (op === 'row-add') {
       var blank = [];
       for (var c = 0; c < ncols; c += 1) blank.push('');
-      out.splice(end + 1, 0, rowLine(blank));
+      out.splice(end + 1, 0, padRow(blank));
     } else if (op === 'row-del') {
       if (caretLine === start || caretLine === sep) {
         // 光标在表头/分隔行：删最后一条数据行；没有数据行则删整表

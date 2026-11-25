@@ -56,7 +56,7 @@ ok('tableOp: row-add 在表末尾加空行', () => {
   assert.ok(res.ok);
   const lines = res.text.split('\n');
   const idx = lines.findIndex((l) => l === '| 1 | 2 |');
-  assert.strictEqual(lines[idx + 1], '|||');
+  assert.strictEqual(lines[idx + 1], '|  |  |');
 });
 
 ok('tableOp: row-del 删光标所在数据行', () => {
@@ -70,16 +70,16 @@ ok('tableOp: col-add 在光标列右侧加列', () => {
   const res = NN_MD.tableOp(TABLE, DATA_AT + 3, 'col-add'); // 光标在 a/1 列内
   assert.ok(res.ok);
   const lines = res.text.split('\n');
-  assert.strictEqual(lines[1], '|a|b||'); // 表头补列
-  assert.strictEqual(lines[2], '|---|---|---|');
+  assert.strictEqual(lines[1], '| a | b |  |'); // 表头补列
+  assert.strictEqual(lines[2], '| --- | --- | --- |');
 });
 
 ok('tableOp: col-del 删光标所在列', () => {
   const res = NN_MD.tableOp(TABLE, DATA_AT, 'col-del'); // 光标在第一列
   assert.ok(res.ok);
   const lines = res.text.split('\n');
-  assert.strictEqual(lines[1], '|b|');
-  assert.strictEqual(lines[3], '|2|');
+  assert.strictEqual(lines[1], '| b |');
+  assert.strictEqual(lines[3], '| 2 |');
 });
 
 ok('tableOp: col-del 最后一列 → 删整表', () => {
