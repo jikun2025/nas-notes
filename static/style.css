@@ -316,6 +316,26 @@ mark { background: var(--mark); color: inherit; border-radius: 2px; padding: 0 1
   color: var(--muted);
   font-size: 13px;
 }
+/* 字号指令（渲染后 span） */
+.fs-small { font-size: 0.8em; }
+.fs-large { font-size: 1.35em; }
+.fs-xlarge { font-size: 1.8em; }
+/* Markdown 表格 */
+.md-preview table.md-table {
+  border-collapse: collapse;
+  margin: 12px 0;
+  max-width: 100%;
+  font-size: 14px;
+}
+.md-preview table.md-table th, .md-preview table.md-table td {
+  border: 1px solid var(--border);
+  padding: 6px 10px;
+  overflow-wrap: anywhere;
+}
+.md-preview table.md-table th { background: #f3f4f6; font-weight: 600; }
+.md-preview table.md-table td.md-al-center, .md-preview table.md-table th.md-al-center { text-align: center; }
+.md-preview table.md-table td.md-al-right, .md-preview table.md-table th.md-al-right { text-align: right; }
+.md-btn.md-fs sub { font-size: 9px; }
 .editor-foot {
   padding: 8px 24px;
   border-top: 1px solid var(--border);

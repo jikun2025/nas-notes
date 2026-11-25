@@ -1573,10 +1573,66 @@ function applyLinePrefix(makePrefix) {
   handleEdit();
 }
 
+// 字号：对选区套 <span style="font-size:small|large|xlarge">…</span>（渲染端白名单定点恢复）。
+// 再次点击同字号且选区即该 span → 取消。
+function applyFontSize(size) {
+  const ta = els.bodyInput;
+  const res = NN_MD.fsWrap(ta.value, ta.selectionStart, ta.selectionEnd, size);
+  ta.value = res.text;
+  ta.focus();
+  ta.setSelectionRange(res.start, res.end);
+  handleEdit();
+}
+
+// 插入表格：用小弹窗选行列（数字输入，默认 3 列 × 2 行）
+function insertTable() {
+  const rowsStr = prompt('插入表格：数据行数（不含表头）', '2');
+  if (rowsStr === null) return;
+  const colsStr = prompt('插入表格：列数', '3');
+  if (colsStr === null) return;
+  const rows = Math.max(0, Math.min(50, parseInt(rowsStr, 10) || 0));
+  const cols = Math.max(1, Math.min(20, parseInt(colsStr, 10) || 3));
+  const ta = els.bodyInput;
+  const start = ta.selectionStart;
+  const before = ta.value.slice(0, start);
+  const pad = before && !/\n\n$/.test(before) ? (/\n$/.test(before) ? '\n' : '\n\n') : '';
+  const block = NN_MD.insertTableMarkdown(rows, cols);
+  const tail = '\n';
+  ta.value = before + pad + block + tail + ta.value.slice(ta.selectionEnd);
+  const caret = start + pad.length + block.length + tail.length;
+  ta.focus();
+  ta.setSelectionRange(caret, caret);
+  handleEdit();
+  toast('已插入 ' + cols + ' 列 × ' + rows + ' 行表格：光标放到表上可用「行/列」按钮增删');
+}
+
+// 表格增删行列：根据光标所在行/列定位
+function tableOperate(op) {
+  const ta = els.bodyInput;
+  const res = NN_MD.tableOp(ta.value, ta.selectionStart, op);
+  if (!res.ok) { toast(res.reason || '表格操作失败'); return; }
+  ta.value = res.text;
+  ta.focus();
+  const pos = Math.min(ta.value.length, ta.selectionStart);
+  ta.setSelectionRange(pos, pos);
+  handleEdit();
+  const labels = { 'row-add': '已在表格末尾加一行', 'row-del': '已删除光标所在行', 'col-add': '已在光标右侧加一列', 'col-del': '已删除光标所在列' };
+  toast(labels[op] || '表格已更新');
+}
+
 function handleMdAction(kind) {
   if (!currentId) { toast('请先打开一条便签'); return; }
   if (kind === 'preview') { togglePreview(); return; }
   if (previewOn) togglePreview(false);
+  if (kind === 'table') { insertTable(); return; }
+  if (kind === 'fs-small' || kind === 'fs-large' || kind === 'fs-xlarge') {
+    applyFontSize(kind.slice(3));
+    return;
+  }
+  if (kind === 'row-add' || kind === 'row-del' || kind === 'col-add' || kind === 'col-del') {
+    tableOperate(kind);
+    return;
+  }
   switch (kind) {
     case 'bold': applyAround('**', '**', '加粗文字'); break;
     case 'italic': applyAround('*', '*', '斜体文字'); break;
