@@ -9,7 +9,49 @@
   window.__NnBridge = true;
 
   var ASSET_ORIGIN = 'https://appassets.androidplatform.net';
-  var origFetch = window.fetch.bind(window);
+
+  // 部分兼容层的 WebView 没有 fetch：给一个基于 XHR 的最小实现，避免
+  // 下面 window.fetch = ... 第一行就抛错导致整座桥失效（登录/同步全废）。
+  var origFetch;
+  if (typeof window.fetch === 'function') {
+    origFetch = window.fetch.bind(window);
+  } else {
+    origFetch = function (input, init) {
+      init = init || {};
+      return new Promise(function (resolve, reject) {
+        var xhr = new XMLHttpRequest();
+        xhr.open(init.method || 'GET', String(input), true);
+        var hs = init.headers || {};
+        Object.keys(hs).forEach(function (k) { xhr.setRequestHeader(k, hs[k]); });
+        xhr.onload = function () {
+          resolve(makeResponse(xhr.responseText, xhr.status,
+            { 'Content-Type': xhr.getResponseHeader('Content-Type') || '' }));
+        };
+        xhr.onerror = function () { reject(new TypeError('XHR failed')); };
+        xhr.send(init.body != null ? String(init.body) : null);
+      });
+    };
+  }
+
+  // 老 WebView 的 Response 构造器对 204/205/304 或某些 header 会抛异常；
+  // 构造失败时退化成鸭子类型对象（app.js 只用 ok/status/json/text/headers）。
+  function makeResponse(text, status, hdrs) {
+    hdrs = hdrs || {};
+    try {
+      if (typeof Response === 'function') {
+        return new Response(text, { status: status, headers: hdrs });
+      }
+    } catch (e) { /* 落到下面的兼容对象 */ }
+    var body = String(text == null ? '' : text);
+    return {
+      status: status,
+      ok: status >= 200 && status < 300,
+      headers: { get: function (k) { return hdrs[k] || null; } },
+      json: function () { return Promise.resolve(JSON.parse(body)); },
+      text: function () { return Promise.resolve(body); },
+      blob: function () { return Promise.resolve(new Blob([body])); }
+    };
+  }
 
   var cbSeq = 0;
   function nextCb() {
@@ -49,10 +91,11 @@
         }
         var cb = nextCb();
         // 8 秒足够局域网响应；再长会让「点同步」像卡死。超时后本机数据照常保留。
+        // 兼容层里的原生转发可能比普通 WebView 慢，留 10 秒；超时后本机数据照常保留。
         var timer = setTimeout(function () {
           delete window[cb];
           reject(new TypeError('request timeout（NAS 无响应，本机数据不受影响）'));
-        }, 8000);
+        }, 10000);
         window[cb] = function (status, respHeaders, text) {
           clearTimeout(timer);
           delete window[cb];
@@ -65,11 +108,7 @@
           try {
             hdrs = typeof respHeaders === 'string' ? JSON.parse(respHeaders) : (respHeaders || {});
           } catch (e) { hdrs = {}; }
-          try {
-            resolve(new Response(text, { status: status, headers: hdrs }));
-          } catch (e) {
-            reject(new TypeError('bad response from native bridge: ' + e.message));
-          }
+          resolve(makeResponse(text, status, hdrs));
         };
         try {
           window.NasNative.apiAsync(cb, method, path, JSON.stringify(headers), body);
@@ -90,7 +129,16 @@
       e.preventDefault();
       origFetch(a.href)
         .then(function (r) { return r.blob(); })
-        .then(function (b) { return b.text(); })
+        .then(function (b) {
+          // Blob.prototype.text 是较新 API：compat.js 已补，这里再兜一层 FileReader。
+          if (typeof b.text === 'function') return b.text();
+          return new Promise(function (resolve, reject) {
+            var fr = new FileReader();
+            fr.onload = function () { resolve(String(fr.result)); };
+            fr.onerror = function () { reject(fr.error || new Error('FileReader failed')); };
+            fr.readAsText(b, 'utf-8');
+          });
+        })
         .then(function (t) {
           if (window.NasNative && window.NasNative.saveText) {
             window.NasNative.saveText(String(a.download || 'nas-notes-backup.json'), t);

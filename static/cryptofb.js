@@ -14,7 +14,12 @@
  */
 (function () {
   'use strict';
-  var g = globalThis;
+  // 不把 ES2020 的全局对象当成唯一依赖（老 WebView / 兼容层可能没有）：
+  // 浏览器走 window，Node 走 global，vm sandbox 走 globalThis，全部用 typeof 安全探测。
+  var g = (typeof window !== 'undefined') ? window
+        : (typeof global !== 'undefined') ? global
+        : (typeof self !== 'undefined') ? self
+        : (typeof globalThis !== 'undefined') ? globalThis : this;
   var expose = g.__cryptofb_export_internals__ === true; // Node 桩测钩子
   if (!expose && g.crypto && g.crypto.subtle &&
       typeof g.crypto.subtle.importKey === 'function') {

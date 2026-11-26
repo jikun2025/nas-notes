@@ -3,6 +3,17 @@
 轻签（NasNotes）的本地版本史。每个版本对应一次提交，并在 git 里打了同名附注标签（`git tag -n` 可看摘要）。
 APK 的 `versionCode` / `versionName` 与此处版本号同步；PWA 只需强刷让 Service Worker 换缓存。
 
+## v2.6 — 2026-11-26
+
+增量同步、内存全文索引、鸿蒙 7.0 / 卓易通兼容加固。
+
+- **增量同步**：服务端给每次写入/删除分配单调递增 `rev`（`sync_state.notes_rev`），`GET /api/notes?since=<rev>` 只回变更并按 `rev` 分页（400 条 / 约 4 MB 一页）；删除以墓碑保留，增量也能拉到。`GET /api/meta` 附 `epoch` 代际，RESET 后客户端自动强制全量。客户端把 `{rev, epoch, salt}` 游标存本机 IndexedDB，salt/epoch 变化即全量；老服务端无 `rev` 时自动退化为一次全量不写游标。冲突裁决仍是 LWW + device 字典序，`rev` 不参与裁决（双端一致）。
+- 实测 416 条便签：全量响应 89,402 B，无变更增量响应 **115 B**；5000 条库的日常同步不再搬运 10.7 MB。
+- **全文索引**：新增 `static/nn-index.js`（零依赖 ES5），解锁后在内存构建中文 bigram + 单字倒排表与分类倒排表；搜索先取候选集再按原字段 `includes()` 精确校验，语义与全量扫描完全一致（1000 条 / 200 组随机查询对照零漏检）。索引随单条增删改增量维护，锁定/清库立即销毁，**明文绝不落盘**；`idbPutMany()` 用单事务批量写优化导入与拉取。
+- **鸿蒙 7.0 / 卓易通**：新增 `static/compat.js` ES5 能力垫片（TextEncoder/TextDecoder、closest、NodeList.forEach、Object.assign、Array.from、Blob.text 等）与 `window.__NN_CAPS__` 诊断；WebView 新旧两版 `shouldInterceptRequest` 都转发同一判定，安全区 insets 不回调时用系统 dimen 兜底；`_bridge.js` 补 fetch/Response/FileReader 降级；CSS 对 dvh/env 做双降级；清理 `globalThis`。原生鸿蒙（ArkWeb）版可直接复用 `static/`，只需重写壳层。
+- 测试：新增 `test_incremental_sync.py`(31) / `test_search_index.js`(13) / `test_harmony_compat.js`(17) / `test_client_sync.js`(28，真实浏览器端到端)；旧测试 `test_ui_overhaul` 断言随搜索实现更新，全套 18 套回归全绿。
+- SW 缓存 v28；APK `versionCode 26 / 2.6`。
+
 ## v2.5 — 2026-11-26
 
 大规模数据性能：压测、分批渲染与搜索防抖。

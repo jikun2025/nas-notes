@@ -1,11 +1,13 @@
-const CACHE = 'nas-notes-v27';
+const CACHE = 'nas-notes-v28';
 const SHELL = [
   '/',
   '/index.html',
   '/style.css',
+  '/compat.js',
   '/cryptofb.js',
   '/md.js',
   '/html2md.js',
+  '/nn-index.js',
   '/app.js',
   '/manifest.webmanifest',
   '/icon.svg',

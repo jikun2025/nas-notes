@@ -1,6 +1,6 @@
 # 交接说明（本地接手用）
 
-轻签 / NasNotes：为飞牛 NAS 写的轻量端到端加密便签。后端只有 Python 标准库 + SQLite；前端无框架 PWA（WebCrypto + IndexedDB + Service Worker），NAS 浏览器和安卓主屏共用同一套代码。支持离线读写、正文内联加密图片、低码率录音、本地全文搜索、加密备份导出/导入、手动/自动同步（间隔可配）。另有 `android/` 原生 APK 壳（纯 Java 零依赖：WebView 挂 https 虚拟域加载同一份 static/，`_bridge.js` 把 /api/* 原生转发到可配置的 NAS 地址，APK 路线不要求 NAS 上 HTTPS）。
+轻签 / NasNotes：为飞牛 NAS 写的轻量端到端加密便签。后端只有 Python 标准库 + SQLite；前端无框架 PWA（WebCrypto + IndexedDB + Service Worker），NAS 浏览器和安卓主屏共用同一套代码。支持离线读写、正文内联加密图片、低码率录音、内存态全文索引搜索、加密备份导出/导入、基于 `rev` 游标的增量同步（手动/自动模式，间隔可配）。另有 `android/` 原生 APK 壳（纯 Java 零依赖：WebView 挂 https 虚拟域加载同一份 static/，`_bridge.js` 把 /api/* 原生转发到可配置的 NAS 地址，APK 路线不要求 NAS 上 HTTPS）。
 
 ## 仓库状态
 
@@ -28,8 +28,11 @@ PORT=18767 DATA_DIR=/tmp/nas-notes-local STATIC_DIR="$PWD/static" python server.
 1. 服务端和 IndexedDB 只存 AES-256-GCM 密文；明文只能在浏览器内存，锁定/刷新即清除，不写数据库、localStorage 或日志。
 2. HTTPS 是 PWA、WebCrypto 和麦克风的硬条件，不要退回 `http://NAS_IP:端口` 的浏览器直连假设（安卓 APK 壳是例外：虚拟 https 域 + 原生转发，见 `android/`）。
 3. 后端保持零依赖；前端不引入框架、CDN、外链资源。
-4. 冲突策略是 last-write-wins（时间戳相同按设备标识裁决），两端必须一致。
+4. 冲突策略是 last-write-wins（时间戳相同按设备标识裁决），两端必须一致；`rev` 只用于增量分页/游标，不参与裁决。
 5. 改前端后更新 `static/sw.js` 里的 `const CACHE` 版本号，否则手机端拿不到新界面。
+6. 全文索引只能在内存（解锁期间由 plainCache 构建、锁定即销毁），不得写入 IndexedDB / outbox / 备份 / 服务端；同步游标只存 `{rev, epoch, salt}`。
+7. 增量同步要求服务端与客户端一起升级：老客户端不带 `since` 走全量，老服务端无 `rev` 时新客户端自动退化为一次全量。改协议必须同步改 `server.py` 与 `static/app.js`，并跑 `test_incremental_sync.py` + `test_client_sync.js`。
+8. 鸿蒙兼容：`static/compat.js` / `nn-index.js` 必须保持 ES5 语法（垫片本身要在老引擎上能解析）；新增前端文件要同时加进 `static/index.html`、`static/sw.js` 的 SHELL 和 `MainActivity.buildInlinePage()` 的内联脚本列表。
 
 ## 验证清单
 
@@ -52,6 +55,10 @@ node tools/test_offline_sync.js        # 离线库→手动连 NAS→密文上�
 node tools/test_login_server.js        # 登录页 NAS 地址回填/归一化/登录前落盘 8 项（真实浏览器）
 node tools/test_mobile_layout.js      # 手机布局：分类抽屉 + 状态栏安全区 30 项（真实浏览器）
 node tools/test_scale.js           # 大规模数据压测 + 5 项回归（真实浏览器 + 真实 server.py）
+python tools/test_incremental_sync.py  # 服务端增量协议 + 流量对比 31 项
+node tools/test_search_index.js        # 全文索引与全量扫描等价 13 项
+node tools/test_harmony_compat.js      # 鸿蒙兼容静态回归 17 项
+node tools/test_client_sync.js         # 客户端增量同步端到端 28 项
 ```
 
 再测登录（账户名+密码）、`/api/meta` 初始化、便签密文写入读回、设置里改名改密、锁定/解锁后搜索；UI 改动另需浏览器实测：三区布局与分类筛选、富文本/源码/分栏/预览四种视图切换、富文本下工具栏加粗/标题/列表/表格是否直接生效且源码视图同步出现 `**` `#`、两级设置切换、右键/长按菜单改分类与删除、字号下拉即时生效、段落下拉切换标题级别、标题/正文字数计数、顶部「保存」立即落盘、手机端工具栏单行横滑与分类抽屉（☰ 打开、点遮罩/选分类收起）、顶部为系统状态栏让位、表格一键插入与增删行列。详细文档见 `README.md` 与 `SECURITY.md`。

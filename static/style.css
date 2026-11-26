@@ -21,6 +21,12 @@
   --editor-fs: 15px;
   /* 系统栏安全区：安卓 15+ 强制 edge-to-edge，WebView 会画到状态栏/手势条下面。
      原生层（MainActivity）会把真实 insets 写成 --nn-safe-*，浏览器里退化为 env()。 */
+  /* 两条声明做双降级：老 WebView 不认 env()，第二条整条被丢弃，
+     第一条生效为 0px；安卓壳注入 --nn-safe-* 时两条都取注入值。 */
+  --safe-top: var(--nn-safe-top, 0px);
+  --safe-bottom: var(--nn-safe-bottom, 0px);
+  --safe-left: var(--nn-safe-left, 0px);
+  --safe-right: var(--nn-safe-right, 0px);
   --safe-top: var(--nn-safe-top, env(safe-area-inset-top, 0px));
   --safe-bottom: var(--nn-safe-bottom, env(safe-area-inset-bottom, 0px));
   --safe-left: var(--nn-safe-left, env(safe-area-inset-left, 0px));

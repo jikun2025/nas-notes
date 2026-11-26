@@ -9,6 +9,8 @@
   <link rel="icon" href="/icon.svg" type="image/svg+xml">
   <link rel="apple-touch-icon" href="/icon-192.png">
   <link rel="stylesheet" href="/style.css">
+  <!-- 兼容垫片必须最先执行：老 WebView / 鸿蒙卓易通缺的 ES2015+ 与 DOM API 在这里补齐 -->
+  <script src="/compat.js"></script>
 </head>
 <body>
   <div id="lockScreen" class="lock-screen">
@@ -373,6 +375,7 @@
   <script src="/cryptofb.js"></script>
   <script src="/md.js"></script>
   <script src="/html2md.js"></script>
+  <script src="/nn-index.js"></script>
   <script src="/app.js"></script>
 </body>
 </html>

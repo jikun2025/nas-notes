@@ -4,6 +4,10 @@
 服务端只保存 AES-GCM 密文、随机 IV 和同步元数据；
 无法解密便签内容，也不提供服务端全文搜索。
 
+同步：每条写入/删除都分配一个单调递增的 rev（服务端序号，与客户端时钟无关），
+客户端用 GET /api/notes?since=<rev> 只拉取变更，响应按 rev 分页；删除以
+墓碑（deleted=1）保留在同一张表里，因此增量同步也能拉到删除事件。
+
 鉴权：标准账户登录（默认 admin / admin，首次登录后请在「设置」里修改），
 登录换取随机会话令牌（X-Token / Bearer 头）。
 
@@ -49,6 +53,9 @@ MAX_PAYLOAD = 12 * 1024 * 1024
 # 整个请求体上限，略大于 MAX_PAYLOAD，防止超大请求占用内存。
 MAX_BODY = 14 * 1024 * 1024
 META_VERSION = 1
+# 增量同步分页：单页条数与估算字节上限，避免一次响应体过大。
+PAGE_LIMIT = 400
+MAX_PAGE_BYTES = 4 * 1024 * 1024
 
 # 口令哈希（服务端账户表用，与客户端端到端 KDF 相互独立）
 PWD_ITERATIONS = 200_000
@@ -233,6 +240,31 @@ def init_db():
         conn.execute(
             "CREATE TABLE IF NOT EXISTS meta (key TEXT PRIMARY KEY, value TEXT NOT NULL)"
         )
+        # 增量同步游标：notes_rev 是全局单调递增序号，epoch 是加密库代际。
+        # 老库升级时补 rev 列并按 updated_at 排序回填，保证 ?since= 不漏历史数据。
+        conn.execute(
+            "CREATE TABLE IF NOT EXISTS sync_state "
+            "(key TEXT PRIMARY KEY, value INTEGER NOT NULL)"
+        )
+        conn.execute("INSERT OR IGNORE INTO sync_state(key, value) VALUES ('notes_rev', 0)")
+        conn.execute("INSERT OR IGNORE INTO sync_state(key, value) VALUES ('epoch', 1)")
+        note_columns = [r[1] for r in conn.execute("PRAGMA table_info(notes)").fetchall()]
+        if "rev" not in note_columns:
+            conn.execute("ALTER TABLE notes ADD COLUMN rev INTEGER NOT NULL DEFAULT 0")
+        legacy_rows = conn.execute(
+            "SELECT id FROM notes WHERE rev IS NULL OR rev = 0 ORDER BY updated_at, id"
+        ).fetchall()
+        if legacy_rows:
+            max_rev = int(conn.execute(
+                "SELECT value FROM sync_state WHERE key = 'notes_rev'"
+            ).fetchone()[0])
+            for legacy in legacy_rows:
+                max_rev += 1
+                conn.execute("UPDATE notes SET rev = ? WHERE id = ?", (max_rev, legacy["id"]))
+            conn.execute(
+                "UPDATE sync_state SET value = ? WHERE key = 'notes_rev'", (max_rev,)
+            )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_notes_rev ON notes(rev)")
         conn.execute(
             """
             CREATE TABLE IF NOT EXISTS accounts (
@@ -270,6 +302,7 @@ def init_db():
 
 
 def note_dict(row):
+    keys = row.keys()
     return {
         "id": row["id"],
         "iv": row["iv"],
@@ -278,7 +311,29 @@ def note_dict(row):
         "updated_at": row["updated_at"],
         "deleted": bool(row["deleted"]),
         "device": row["device"],
+        "rev": int(row["rev"] or 0) if "rev" in keys else 0,
     }
+
+
+# ---------- 增量同步序号 ----------
+# rev 由服务端分配，与客户端时钟无关：客户端时钟回拨、同一毫秒内多条写入、
+# 时间戳相同按 device 裁决这几种情况下，单纯用 updated_at 做 since 都会漏数据。
+# UPDATE 先取得 SQLite 写锁，同一事务内再读，天然串行，无需 BEGIN IMMEDIATE。
+def allocate_rev(conn):
+    conn.execute("UPDATE sync_state SET value = value + 1 WHERE key = 'notes_rev'")
+    return int(conn.execute(
+        "SELECT value FROM sync_state WHERE key = 'notes_rev'"
+    ).fetchone()[0])
+
+
+def current_rev(conn):
+    row = conn.execute("SELECT value FROM sync_state WHERE key = 'notes_rev'").fetchone()
+    return int(row[0]) if row else 0
+
+
+def current_epoch(conn):
+    row = conn.execute("SELECT value FROM sync_state WHERE key = 'epoch'").fetchone()
+    return int(row[0]) if row else 1
 
 
 def is_newer(updated_a, device_a, updated_b, device_b):
@@ -454,9 +509,10 @@ class Handler(BaseHTTPRequestHandler):
             def op(conn):
                 row = conn.execute("SELECT value FROM meta WHERE key = 'vault'").fetchone()
                 if not row:
-                    return {"initialized": False}
+                    return {"initialized": False, "epoch": current_epoch(conn)}
                 value = json.loads(row["value"])
                 value["initialized"] = True
+                value["epoch"] = current_epoch(conn)
                 return value
 
             self._send_json(200, transaction(op))
@@ -471,9 +527,49 @@ class Handler(BaseHTTPRequestHandler):
             return
 
         if path == "/api/notes":
+            qs = urllib.parse.parse_qs(parsed.query)
+            # 只有显式带 ?since= 的才是新客户端；老客户端不带参数时保持一次性
+            # 全量返回（它不认识 partial/nextSince，分页会让它只拿到第一页）。
+            incremental = "since" in qs
+            raw_since = (qs.get("since") or [""])[0]
+            since = int(raw_since) if re.fullmatch(r"\d{1,18}", raw_since or "") else 0
+
             def op(conn):
-                rows = conn.execute("SELECT * FROM notes ORDER BY updated_at DESC").fetchall()
-                return {"notes": [note_dict(r) for r in rows], "serverTime": now_iso()}
+                epoch = current_epoch(conn)
+                head_rev = current_rev(conn)
+                common = {"serverTime": now_iso(), "rev": head_rev, "epoch": epoch}
+                if not incremental:
+                    rows = conn.execute(
+                        "SELECT * FROM notes ORDER BY updated_at DESC"
+                    ).fetchall()
+                    common.update({
+                        "notes": [note_dict(r) for r in rows],
+                        "partial": False, "nextSince": head_rev,
+                    })
+                    return common
+                rows = conn.execute(
+                    "SELECT * FROM notes WHERE rev > ? ORDER BY rev ASC LIMIT ?",
+                    (since, PAGE_LIMIT),
+                ).fetchall()
+                notes = []
+                used = 0
+                partial = False
+                for row in rows:
+                    size = len(row["iv"] or "") + len(row["payload"] or "") + 256
+                    if notes and used + size > MAX_PAGE_BYTES:
+                        partial = True
+                        break
+                    notes.append(note_dict(row))
+                    used += size
+                if not partial and len(rows) == PAGE_LIMIT:
+                    partial = True
+                # 同一只读事务里 head_rev 与 rows 是同一快照：没有更多行时
+                # head_rev 就是上限；分页时用本页最后一条的 rev，绝不跳号。
+                next_since = notes[-1]["rev"] if (partial and notes) else head_rev
+                common.update({
+                    "notes": notes, "partial": partial, "nextSince": next_since,
+                })
+                return common
 
             self._send_json(200, transaction(op))
             return
@@ -650,12 +746,14 @@ class Handler(BaseHTTPRequestHandler):
             if row and not is_newer(updated_at, device, row["updated_at"], row["device"]):
                 return {"applied": False, "note": note_dict(row)}
 
+            rev = allocate_rev(conn)
             created_at = row["created_at"] if row else updated_at
             conn.execute(
                 """INSERT OR REPLACE INTO notes
-                   (id, iv, payload, created_at, updated_at, deleted, device)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (note_id, iv, ciphertext, created_at, updated_at, deleted_flag, device),
+                   (id, iv, payload, created_at, updated_at, deleted, device, rev)
+                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)""",
+                (note_id, iv, ciphertext, created_at, updated_at,
+                 deleted_flag, device, rev),
             )
             saved = conn.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
             return {"applied": True, "note": note_dict(saved)}
@@ -679,6 +777,9 @@ class Handler(BaseHTTPRequestHandler):
             def op(conn):
                 conn.execute("DELETE FROM meta WHERE key = 'vault'")
                 conn.execute("DELETE FROM notes")
+                # 清空后 rev 不回退（否则旧游标会大于新序号），改换代际：
+                # 客户端看到 epoch 变化就自动从 since=0 重新全量对齐。
+                conn.execute("UPDATE sync_state SET value = value + 1 WHERE key = 'epoch'")
 
             transaction(op)
             self._send_json(200, {"ok": True})
@@ -709,14 +810,15 @@ class Handler(BaseHTTPRequestHandler):
             if row and not is_newer(updated_at, device, row["updated_at"], row["device"]):
                 return {"applied": False, "note": note_dict(row)}
 
+            rev = allocate_rev(conn)
             created_at = row["created_at"] if row else updated_at
             iv = row["iv"] if row else ""
             ciphertext = row["payload"] if row else ""
             conn.execute(
                 """INSERT OR REPLACE INTO notes
-                   (id, iv, payload, created_at, updated_at, deleted, device)
-                   VALUES (?, ?, ?, ?, ?, 1, ?)""",
-                (note_id, iv, ciphertext, created_at, updated_at, device),
+                   (id, iv, payload, created_at, updated_at, deleted, device, rev)
+                   VALUES (?, ?, ?, ?, ?, 1, ?, ?)""",
+                (note_id, iv, ciphertext, created_at, updated_at, device, rev),
             )
             saved = conn.execute("SELECT * FROM notes WHERE id = ?", (note_id,)).fetchone()
             return {"applied": True, "note": note_dict(saved)}

@@ -160,6 +160,11 @@ public class MainActivity extends Activity {
             applySafeInsets(top, bottom, left, right);
             return insets;
         });
+        ui.postDelayed(new Runnable() {
+            @Override public void run() {
+                if (webView != null && safeTop == 0 && safeBottom == 0) applyFallbackInsets();
+            }
+        }, 1200);
     }
 
     private void applySafeInsets(int top, int bottom, int left, int right) {
@@ -169,6 +174,23 @@ public class MainActivity extends Activity {
         safeLeft = left;
         safeRight = right;
         injectSafeInsets();
+    }
+
+    /** 部分鸿蒙兼容层不会回调 setOnApplyWindowInsetsListener：延迟后用系统
+     *  dimen 资源里的状态栏/导航栏高度兜底，至少保证顶部不被状态栏压住。 */
+    private int systemDimen(String name) {
+        try {
+            int id = getResources().getIdentifier(name, "dimen", "android");
+            return id > 0 ? getResources().getDimensionPixelSize(id) : 0;
+        } catch (Exception e) {
+            return 0;
+        }
+    }
+
+    private void applyFallbackInsets() {
+        int top = systemDimen("status_bar_height");
+        int bottom = systemDimen("navigation_bar_height");
+        if (top > 0 || bottom > 0) applySafeInsets(top, bottom, safeLeft, safeRight);
     }
 
     /** 把 insets 折成 dp（= CSS px）写进页面；页面重载后由 onPageFinished 再补一次。 */
@@ -240,7 +262,9 @@ public class MainActivity extends Activity {
         String html = indexHtml;
         html = replaceOnce(html, "<link rel=\"stylesheet\" href=\"/style.css\">",
                 "<style>" + readAsset("style.css") + "</style>");
-        for (String js : new String[]{"cryptofb.js", "md.js", "html2md.js", "app.js"}) {
+        // compat.js 必须排第一（它本身只用 ES5 语法）；nn-index.js 在 app.js 之前。
+        for (String js : new String[]{"compat.js", "cryptofb.js", "md.js",
+                "html2md.js", "nn-index.js", "app.js"}) {
             String code = readAsset(js);
             if (code == null || code.isEmpty()) continue;
             html = replaceOnce(html, "<script src=\"/" + js + "\"></script>",
@@ -404,9 +428,13 @@ public class MainActivity extends Activity {
     // ---------- WebView 客户端 ----------
 
     private final class BridgeClient extends WebViewClient {
-        @Override
-        public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
-            Uri uri = request.getUrl();
+        /**
+         * 两条拦截回调共用同一套判定。老 WebView / 部分鸿蒙兼容层（卓易通）
+         * 只回调 shouldInterceptRequest(WebView, String)（API 11+）；若不转发，
+         * 虚拟域下首页与 JS/CSS 全部 404 —— 表现就是白屏或「能联通但 502」。
+         */
+        private WebResourceResponse interceptUri(Uri uri) {
+            if (uri == null) return null;
             String host = uri.getHost();
             if (host == null) return null;
             if (host.equals(ASSET_HOST)) {
@@ -423,12 +451,24 @@ public class MainActivity extends Activity {
             String server = prefs.getString(PREF_SERVER, DEFAULT_SERVER);
             try {
                 String allowHost = new URL(server).getHost();
-                if (allowHost != null && allowHost.equals(host)) return null; // 放行（例如手动打开 NAS 直链）
+                if (allowHost != null && allowHost.equals(host)) return null;
             } catch (Exception ignored) { }
             WebResourceResponse deny = new WebResourceResponse(
                     "text/plain", "utf-8", new ByteArrayInputStream("blocked by nas-notes shell".getBytes(StandardCharsets.UTF_8)));
             deny.setStatusCodeAndReasonPhrase(403, "Forbidden");
             return deny;
+        }
+
+        @Override
+        public WebResourceResponse shouldInterceptRequest(WebView view, WebResourceRequest request) {
+            return request == null ? null : interceptUri(request.getUrl());
+        }
+
+        @SuppressWarnings("deprecation")
+        @Override
+        public WebResourceResponse shouldInterceptRequest(WebView view, String url) {
+            try { return interceptUri(Uri.parse(url)); }
+            catch (Exception e) { return null; }
         }
 
         private WebResourceResponse assetResponse403() {
@@ -464,8 +504,15 @@ public class MainActivity extends Activity {
             }
         }
 
+        @SuppressWarnings("deprecation")
         @Override
-        public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) { }
+        public void onReceivedError(WebView view, int errorCode, String description, String failingUrl) {
+            // 老 WebView / 兼容层只有这个重载；主文档失败时同样降级，避免停在白屏。
+            if (failingUrl != null && (failingUrl.equals(ASSET_ORIGIN + "/")
+                    || failingUrl.equals(ASSET_ORIGIN + "/index.html"))) {
+                fallbackToInline("主文档加载失败(旧版回调)：" + description);
+            }
+        }
     }
 
     private final class ChromeClient extends WebChromeClient {
@@ -473,7 +520,8 @@ public class MainActivity extends Activity {
         public boolean onConsoleMessage(ConsoleMessage m) {
             // 只留错误级，够诊断用又不至于刷屏
             try {
-                if (m != null && m.messageLevel() == ConsoleMessage.MessageLevel.ERROR) {
+                if (m != null && (m.messageLevel() == ConsoleMessage.MessageLevel.ERROR
+                        || (m.message() != null && m.message().indexOf("[compat]") >= 0))) {
                     synchronized (consoleLog) {
                         if (consoleLog.length() < 4000) {
                             consoleLog.append(m.message()).append(" @").append(m.lineNumber()).append('\n');

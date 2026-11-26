@@ -273,11 +273,12 @@ ok('搜索输入防抖，连打字不逐字重建列表', () => {
   assert.doesNotMatch(app, /searchInput\.addEventListener\('input', renderList\)/);
 });
 
-ok('正文纯文本延迟解析并缓存，搜索与摘要不重复算', () => {
+ok('搜索走全文索引候选集，正文只在精确校验时按需解析', () => {
   const block = app.slice(app.indexOf('function visibleNotes()'),
     app.indexOf('function noteItemHTML'));
-  assert.match(block, /if \(!query\) return true;/);
-  assert.match(block, /item\.text = text;/);
+  assert.match(block, /noteIndex\.query\(query\)/);
+  assert.match(block, /!query \? true : matchesQuery\(item, query\)/);
+  assert.match(app, /if \(!item\.text\) item\.text = bodyText\(plain\);/);
   assert.match(app, /item\.text \|\| bodyText\(item\.plain\)/);
   assert.match(app, /const total = query \? notesInActiveFolder\(\)\.length : items\.length;/);
 });

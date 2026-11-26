@@ -163,6 +163,11 @@ const els = {
 
 const notesCache = new Map();   // id -> 密文便签（可持久化）
 const plainCache = new Map();   // id -> {title, body}（仅内存，绝不持久化）
+// 内存全文/分类倒排索引：由已解密的 plainCache 构建，锁定即销毁；
+// 明文绝不写进 IndexedDB、outbox、备份，也不发给服务端。
+const noteIndex = (typeof NN_INDEX !== 'undefined' && NN_INDEX.create)
+  ? NN_INDEX.create() : null;
+const CURSOR_META_KEY = 'sync_cursor';   // 增量同步游标，只存 rev/epoch/salt
 let cryptoKey = null;           // 保险库密钥 wkey（CryptoKey），仅内存
 let wkeyBytes = null;           // wkey 原始字节（仅内存，改口令时重新包裹用）
 let sessionToken = '';          // 登录换取的会话令牌（本机 localStorage）
@@ -286,7 +291,7 @@ function syncPaneScroll(from, to) {
 
 // ---------- 工具 ----------
 function genId() {
-  if (globalThis.crypto && typeof crypto.randomUUID === 'function') return crypto.randomUUID();
+  if (window.crypto && typeof window.crypto.randomUUID === 'function') return window.crypto.randomUUID();
   return 'n-' + Date.now().toString(36) + '-' + Math.random().toString(36).slice(2, 10);
 }
 
@@ -1251,6 +1256,19 @@ async function idbDelete(storeName, key) {
   });
 }
 
+/** 单事务批量写：导入备份 / 增量拉取时不再为每条便签各开一个事务。 */
+async function idbPutMany(storeName, values) {
+  if (!values || values.length === 0) return;
+  const db = await dbPromise;
+  return new Promise((resolve, reject) => {
+    const tx = db.transaction(storeName, 'readwrite');
+    const store = tx.objectStore(storeName);
+    for (const value of values) store.put(value);
+    tx.oncomplete = () => resolve();
+    tx.onerror = () => reject(tx.error);
+  });
+}
+
 // ---------- 锁屏与加密库 ----------
 const DEFAULT_USERNAME = 'admin';
 
@@ -1371,6 +1389,8 @@ function countLocalNotes() {
 async function clearLocalNotes() {
   notesCache.clear();
   plainCache.clear();
+  if (noteIndex) noteIndex.clear();
+  await resetSyncCursor();
   for (const store of [STORE_NOTES, STORE_OUT]) {
     try {
       const rows = await idbGetAll(store);
@@ -1634,6 +1654,7 @@ async function migrateLegacyVault(legacyKey, passphrase) {
 
 async function rebuildPlainCache() {
   plainCache.clear();
+  if (noteIndex) noteIndex.clear();
   let failed = 0;
   for (const note of notesCache.values()) {
     if (note.deleted || !note.payload) continue;
@@ -1642,6 +1663,7 @@ async function rebuildPlainCache() {
       if (plain && typeof plain.title === 'string' && typeof plain.body === 'string') {
         normalizePlain(plain);
         plainCache.set(note.id, plain);
+        indexNote(note.id, plain);
       } else {
         failed += 1;
       }
@@ -1668,6 +1690,7 @@ async function lockApp() {
   cryptoKey = null;
   wkeyBytes = null;
   plainCache.clear();
+  if (noteIndex) noteIndex.clear();   // 明文索引只在解锁期间存在
   folderRegistry = [];
   currentId = null;
   closeRail();
@@ -1704,6 +1727,7 @@ async function queueUpsert(note) {
     device: deviceId
   });
   notesCache.set(updated.id, updated);
+  indexNote(updated.id);
   setSaveState('已存本机');
 
   await idbPut(STORE_NOTES, updated);
@@ -1732,6 +1756,7 @@ async function queueDelete(noteId) {
   });
   notesCache.set(noteId, updated);
   plainCache.delete(noteId);
+  if (noteIndex) noteIndex.remove(noteId);
   await idbPut(STORE_NOTES, updated);
   await idbPut(STORE_OUT, {
     id: noteId,
@@ -1744,6 +1769,25 @@ async function queueDelete(noteId) {
 }
 
 // ---------- 同步（只在用户主动点，或 Web 端自动模式时发生） ----------
+// 增量同步游标：只存服务端分配的 rev、加密库代际 epoch 与 vault salt。
+// 三者任一变化都强制回退全量；游标里不含任何明文，符合端到端加密约束。
+async function readSyncCursor() {
+  try {
+    const row = await idbGet(STORE_META, CURSOR_META_KEY);
+    if (!row || !row.value) return null;
+    const value = JSON.parse(row.value);
+    return value && typeof value === 'object' ? value : null;
+  } catch (error) {
+    return null;
+  }
+}
+async function writeSyncCursor(value) {
+  await idbPut(STORE_META, { key: CURSOR_META_KEY, value: JSON.stringify(value) });
+}
+async function resetSyncCursor() {
+  try { await idbDelete(STORE_META, CURSOR_META_KEY); } catch (error) { /* 清不掉按全量处理 */ }
+}
+
 // 读服务器 vault，但不写本机缓存：先确认两边是同一套加密库，再谈同步。
 async function readServerVault() {
   let response;
@@ -1823,45 +1867,92 @@ async function sync() {
           const plain = await decryptJSON(cryptoKey, serverNote.iv, serverNote.payload);
           normalizePlain(plain);
           plainCache.set(op.id, plain);
+          indexNote(op.id, plain);
         } catch (error) {
           console.warn('[NasNotes] decrypt pushed note failed', op.id, error);
+          noteIndexRemove(op.id);
         }
       } else {
         plainCache.delete(op.id);
+        noteIndexRemove(op.id);
       }
       if (result.applied === false) toast('检测到更新冲突，已采用服务端版本');
     }
 
-    let response;
-    try {
-      response = await fetch('/api/notes', { headers: authHeaders() });
-    } catch (error) {
-      throw syncFail(SYNC_ERR_NET, '拉取时连不上 NAS');
+    // ---- 增量拉取 ----
+    // 游标是服务端分配的 rev（与本机时钟无关），只存 rev/epoch/salt，无明文。
+    // 老服务端不返回 rev/nextSince 时自动退化为「一次全量、不写游标」，不会失效。
+    const vaultSalt = (vaultMeta && vaultMeta.salt) || '';
+    const serverEpoch = Number(meta.epoch) || 0;
+    const cursor = await readSyncCursor();
+    let since = 0;
+    if (cursor && cursor.salt === vaultSalt && cursor.epoch === serverEpoch
+        && Number.isFinite(cursor.rev) && cursor.rev >= 0) {
+      since = cursor.rev;
+    } else if (cursor && cursor.epoch !== serverEpoch) {
+      toast('服务器加密库已被重置，本次做全量对齐');
     }
-    if (response.status === 401) throw syncFail(SYNC_ERR_AUTH, '服务器登录已失效');
-    if (!response.ok) throw syncFail(SYNC_ERR_HTTP, '拉取失败: HTTP ' + response.status);
 
-    const data = await response.json();
     const pendingIds = new Set((await idbGetAll(STORE_OUT)).map((item) => item.id));
+    let incremental = true;
+    let finalRev = since;
+    let pages = 0;
+    let keepPulling = true;
+    while (keepPulling && pages < 200) {
+      pages += 1;
+      let response;
+      try {
+        response = await fetch('/api/notes?since=' + encodeURIComponent(String(since)),
+          { headers: authHeaders() });
+      } catch (error) {
+        throw syncFail(SYNC_ERR_NET, '拉取时连不上 NAS');
+      }
+      if (response.status === 401) throw syncFail(SYNC_ERR_AUTH, '服务器登录已失效');
+      if (!response.ok) throw syncFail(SYNC_ERR_HTTP, '拉取失败: HTTP ' + response.status);
 
-    for (const note of data.notes || []) {
-      if (pendingIds.has(note.id)) continue;
-      const local = notesCache.get(note.id);
-      if (!local || isNewer(note.updated_at, note.device, local.updated_at, local.device)) {
-        notesCache.set(note.id, note);
-        await idbPut(STORE_NOTES, note);
-        if (!note.deleted && note.payload) {
-          try {
-            const plain = await decryptJSON(cryptoKey, note.iv, note.payload);
-            normalizePlain(plain);
-            plainCache.set(note.id, plain);
-          } catch (error) {
-            console.warn('[NasNotes] decrypt pulled note failed', note.id, error);
+      const data = await response.json();
+      if (typeof data.rev !== 'number' || typeof data.nextSince !== 'number') {
+        incremental = false;   // 老服务端：忽略分页字段，按一次性全量处理
+      }
+      const pulled = [];
+      for (const note of data.notes || []) {
+        if (pendingIds.has(note.id)) continue;
+        const local = notesCache.get(note.id);
+        // 冲突裁决仍是 last-write-wins + device 字典序，与服务端 is_newer 完全一致；
+        // rev 只用于分页与游标，绝不参与裁决（双端一致是硬约束）。
+        if (!local || isNewer(note.updated_at, note.device, local.updated_at, local.device)) {
+          pulled.push(note);
+          notesCache.set(note.id, note);
+          if (!note.deleted && note.payload) {
+            try {
+              const plain = await decryptJSON(cryptoKey, note.iv, note.payload);
+              normalizePlain(plain);
+              plainCache.set(note.id, plain);
+              indexNote(note.id, plain);
+            } catch (error) {
+              console.warn('[NasNotes] decrypt pulled note failed', note.id, error);
+              noteIndexRemove(note.id);
+            }
+          } else {
+            plainCache.delete(note.id);
+            noteIndexRemove(note.id);
           }
-        } else {
-          plainCache.delete(note.id);
         }
       }
+      if (pulled.length) await idbPutMany(STORE_NOTES, pulled);
+
+      if (!incremental) { keepPulling = false; break; }
+      if (since > data.rev) {
+        // 本机游标比服务端还大（连到另一套库 / 服务端重建过）：从 0 重来一次
+        since = 0;
+        continue;
+      }
+      finalRev = data.nextSince;
+      keepPulling = Boolean(data.partial);
+      if (keepPulling) since = data.nextSince;
+    }
+    if (incremental) {
+      await writeSyncCursor({ rev: finalRev, epoch: serverEpoch, salt: vaultSalt });
     }
 
     lastSyncAt = new Date().toISOString();
@@ -2197,15 +2288,55 @@ async function setFolderForAll(from, to) {
   return touched;
 }
 
+// ---------- 内存全文索引（明文绝不落盘，锁定即销毁） ----------
+function indexFolderOf(plain) {
+  return String((plain && plain.folder) || '').trim().slice(0, 100).toLowerCase();
+}
+function activeFolderKey() {
+  if (!activeFolder || activeFolder === UNGROUPED) return '';
+  return String(activeFolder).trim().toLowerCase();
+}
+function indexableText(plain) {
+  const parts = [String(plain.title || ''), bodyText(plain), String(plain.folder || '')];
+  const atts = plain.attachments || [];
+  for (let i = 0; i < atts.length; i += 1) parts.push(String(atts[i].name || ''));
+  return parts.join('\n');
+}
+function indexNote(id, plain) {
+  if (!noteIndex) return;
+  const p = plain || plainCache.get(id);
+  if (!p) { noteIndex.remove(id); return; }
+  noteIndex.add(id, indexableText(p), indexFolderOf(p));
+}
+function noteIndexRemove(id) {
+  if (noteIndex) noteIndex.remove(id);
+}
+// 与改造前完全一致的精确匹配：索引只负责缩小候选集，最终判定仍走各字段 includes。
+function matchesQuery(item, query) {
+  const plain = item.plain;
+  if (String(plain.title || '').toLowerCase().includes(query)) return true;
+  if (String(plain.folder || '').toLowerCase().includes(query)) return true;
+  const atts = plain.attachments || [];
+  for (let i = 0; i < atts.length; i += 1) {
+    if (String(atts[i].name || '').toLowerCase().includes(query)) return true;
+  }
+  if (!item.text) item.text = bodyText(plain);
+  return item.text.toLowerCase().includes(query);
+}
+
 function notesInActiveFolder() {
-  return Array.from(notesCache.values())
-    .filter((note) => !note.deleted)
-    .filter((note) => {
-      if (!activeFolder) return true;
-      const plain = plainCache.get(note.id);
-      const folder = (plain && typeof plain.folder === 'string' && plain.folder.trim().slice(0, 100)) || UNGROUPED;
-      return folder === activeFolder;
-    });
+  const key = activeFolderKey();
+  // 分类倒排：切分类时只遍历该分类的 id，不再全量扫 notesCache。
+  const source = (noteIndex && activeFolder)
+    ? noteIndex.idsInFolder(key) : notesCache.keys();
+  const out = [];
+  for (const id of source) {
+    const note = notesCache.get(id);
+    if (!note || note.deleted) continue;
+    if (activeFolder && key !== indexFolderOf(plainCache.get(id))) continue;
+    out.push(note);
+  }
+  return out;
 }
 
 // 列表一次最多渲染多少条。全量缓存、搜索与计数仍基于全部便签，只是不把
@@ -2215,21 +2346,37 @@ let listShowAll = false;
 
 function visibleNotes() {
   const query = els.searchInput.value.trim().toLowerCase();
-  return notesInActiveFolder()
+  // 正在编辑的便签明文可能还没到 450ms 自动保存，索引里是上一版；
+  // 搜索时只刷新这一条，保证「刚打的字立刻能搜到」，成本可忽略。
+  if (query && noteIndex && currentId && plainCache.has(currentId)) {
+    indexNote(currentId, plainCache.get(currentId));
+  }
+
+  let base;
+  if (query && noteIndex) {
+    // 倒排表先给出候选集（中文 bigram 交集，保证包含即召回），
+    // 再按分类过滤、按原字段精确校验，语义与全量扫描完全一致。
+    const ids = noteIndex.query(query);
+    const key = activeFolderKey();
+    base = [];
+    if (ids) {
+      for (const id of ids) {
+        const note = notesCache.get(id);
+        if (!note || note.deleted) continue;
+        if (activeFolder && key !== indexFolderOf(plainCache.get(id))) continue;
+        base.push(note);
+      }
+    }
+  } else {
+    base = notesInActiveFolder();
+  }
+
+  return base
     .map((note) => ({
       note,
       plain: plainCache.get(note.id) || { title: '（无法解密）', body: '', folder: '' }
     }))
-    .filter((item) => {
-      if (!query) return true;   // 无搜索时不必解析正文，列表只渲染前 200 条
-      const text = bodyText(item.plain);
-      item.text = text;          // 缓存给列表摘要复用，避免二次解析
-      return (item.plain.title || '').toLowerCase().includes(query)
-        || text.toLowerCase().includes(query)
-        || (item.plain.folder || '').toLowerCase().includes(query)
-        || (item.plain.attachments || []).some((att) =>
-          (att.name || '').toLowerCase().includes(query));
-    })
+    .filter((item) => (!query ? true : matchesQuery(item, query)))
     .sort((a, b) => String(b.note.updated_at).localeCompare(String(a.note.updated_at)));
 }
 
@@ -2501,9 +2648,12 @@ async function importBackup(file) {
         version: incoming.version || VAULT_VERSION
       };
       await saveLocalVault(vaultMeta);
+      await resetSyncCursor();
     }
 
     const stamp = new Date().toISOString();
+    const noteRows = [];
+    const outRows = [];
     let imported = 0;
     let skipped = 0;
     for (const note of backup.notes) {
@@ -2521,8 +2671,8 @@ async function importBackup(file) {
         device: note.device || 'import'
       };
       notesCache.set(record.id, record);
-      await idbPut(STORE_NOTES, record);
-      await idbPut(STORE_OUT, {
+      noteRows.push(record);
+      outRows.push({
         id: record.id,
         method: 'PUT',
         payload: {
@@ -2533,6 +2683,8 @@ async function importBackup(file) {
       });
       imported += 1;
     }
+    await idbPutMany(STORE_NOTES, noteRows);
+    await idbPutMany(STORE_OUT, outRows);
 
     await rebuildPlainCache();
     renderList();
@@ -2788,6 +2940,7 @@ els.saveAccount.addEventListener('click', async () => {
         version: VAULT_VERSION
       };
       await idbPut(STORE_META, { key: 'vault', value: JSON.stringify(vaultMeta) });
+      await resetSyncCursor();   // salt 变了，旧游标作废，下次全量对齐
     }
     accountName = result.username || targetName || currentName;
 
@@ -4051,7 +4204,8 @@ els.importFile.addEventListener('change', () => {
     }
     if (sessionToken) {
       try {
-        const resp = await fetch('/api/notes', { headers: authHeaders() });
+        // 只验证会话是否有效，不再为了探活把整库便签拉一遍。
+        const resp = await fetch('/api/account', { headers: authHeaders() });
         if (resp.status === 401) handleSessionExpired();
       } catch (error) { /* 离线时保留会话，联网后再验证 */ }
     }

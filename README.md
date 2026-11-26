@@ -116,7 +116,7 @@ gradle assembleRelease
 
 1. **本地写入**：编辑后先在浏览器/WebView 内加密，写入 IndexedDB 的 `notes`，同时向 `outbox` 追加一条操作（新增/删除）；明文只进入内存缓存。
 2. **推送**：按入队顺序把 `outbox` 逐条提交到服务端。服务端用「最后写入时间 + 设备标识」裁决，返回最终版本；客户端用返回结果覆盖本地、解密进内存并清除该条队列。
-3. **拉取**：`GET /api/notes` 取回全部便签（含墓碑），跳过仍有本地待推送操作的条目，只在服务端版本更新时覆盖本地并解密。
+3. **拉取（增量）**：`GET /api/notes?since=<rev>` 只取上次同步后发生变化的行（含删除墓碑），按 `rev` 分页；跳过仍有本地待推送操作的条目，只在服务端版本更新时覆盖本地并解密。首次同步或游标失效时 `since=0` 自动走分页全量。
 4. **冲突**：时间相同按设备标识字典序裁决；冲突时以服务端版本为准并提示。没有字段级合并，同一条便签并发编辑会有一方被覆盖。
 
 **同步方式**（设置 → 同步，配置只存本机）：
@@ -130,6 +130,27 @@ gradle assembleRelease
 - 手动同步第一次会弹出「连接 NAS」小窗输入账户密码；成功后本次进程内不再重复输入，令牌失效时再点一次会重新弹出。
 - 自动间隔可填 10～86400 秒（默认 60 秒），超出范围会提示并自动收敛；锁屏、离线或页面隐藏时跳过。
 - 两种模式的加密、冲突裁决、备份格式完全相同，差异只在「什么时候发起同步」。
+
+**增量同步协议**（v2.6 起，服务端与客户端需一起升级）：
+
+- 服务端每次写入/删除都分配一个**单调递增的 `rev`**（存 `sync_state.notes_rev`，与客户端时钟无关）。客户端时钟回拨、同一毫秒多条写入、`updated_at` 相同按 device 裁决这几种情况，用时间戳做 `since` 都会漏数据，所以改用服务端序号。
+- 响应 `{notes, serverTime, rev, epoch, partial, nextSince}`：`partial=true` 时客户端用 `nextSince` 继续拉下一页（单页最多 400 条 / 约 4 MB），`partial=false` 时把 `rev` 落盘为本机游标。
+- 本机游标只存 `{rev, epoch, salt}` 三字段到 IndexedDB `meta`，**不含任何明文**；`salt` 或 `epoch` 变化（改口令、服务器清空重建）立即强制全量。
+- 删除是墓碑（`deleted=1` 且分配新 rev），增量同步同样能拉到删除事件。
+- **冲突裁决不变**：仍是 last-write-wins + 时间戳相同时按 `device` 字典序，服务端 `is_newer` 与客户端 `isNewer` 完全一致；`rev` 只用于分页与游标，**绝不参与裁决**。
+- 兼容：不带 `?since=` 的老客户端仍拿到一次性全量列表；老服务端（响应无 `rev`/`nextSince`）会让新客户端自动退化为「一次全量、不写游标」，不会失效。
+- 实测（`tools/test_incremental_sync.py`，416 条便签）：全量响应 **89,402 B**，无变更时增量响应 **115 B**（约 1/777）。5000 条库全量约 10.7 MB，日常同步不再重复搬运整个库。
+
+### 全文索引与数据结构
+
+v2.6 起搜索不再每次遍历全部便签、重新解析 Markdown。
+
+- **内存态倒排索引** `static/nn-index.js`（零依赖、纯 ES5）：解锁后由已解密的 `plainCache` 构建，把「标题 + 正文纯文本 + 分类 + 附件名」切成中文友好的 bigram（二元组）与单字，建立 `bigram → 便签 id` 倒排表；同时维护 `分类 → id` 倒排表。
+- 搜索时先用连续 bigram 的交集取候选集（**包含即召回，不会漏检**），再用与改造前完全一致的各字段 `includes()` 精确校验一次，消除跨位置假阳性。1000 条便签 / 200 组随机查询的对照测试（`tools/test_search_index.js`）结果集与全量扫描完全一致。
+- 分类切换从 O(n) 全量扫描降为 O(该分类条数)；无搜索词时完全不解析正文。
+- **明文索引绝不落盘**：只在解锁期间存在于内存，不写 IndexedDB、outbox、备份，也不发给服务端；`lockApp()` / `clearLocalNotes()` 立即销毁。服务端仍无法做明文全文搜索，索引本质只是「搜索缓存」。
+- 索引随单条增删改**增量维护**，不必重建；正在编辑、还没到 450 ms 自动保存的那条会在搜索前单独刷新，保证刚打的字立刻能搜到。
+- **存储层优化**：`notesCache` 本来就是 `id → 密文` 的 Map；新增 `idbPutMany()` 用单事务批量写，导入备份与增量拉取不再为每条便签各开一个事务。同步游标、分类清单 `folderRegistry` 都只存元数据，不含明文。
 
 ### 离线独立的账户与密钥
 
@@ -152,9 +173,28 @@ APK 只有约 110 KB，因为它是**一个 WebView 壳 + 约 320 KB 未压缩�
 
 - **加密与单条写入不随数据量变慢**：AES-GCM 解密 3000 条仅 23 ms；单条编辑保存恒定约 0.5 ms（只重加密并写入这一条，不碰全量）。
 - 优化前列表会把全部便签一次性变成 DOM（3000 条 = 12018 节点 / 757 KB HTML），搜索每敲一个字全量重渲染。现在默认只渲染前 200 条（底部「显示全部」可展开），搜索输入 120 ms 防抖，正文→纯文本延迟解析并缓存：连打 10 个字只重建 1 次列表。
-- **同步是全量模型**：每次手动同步都 `GET /api/notes` 取回全部密文。服务端实测 5,000 条约 10.6 MB / 95 ms（局域网），换设备首次同步还要逐条解密写库（约 0.36 ms/条）。便签越多，单次同步越慢、手机内存压力越大——这是当前架构的主要上限，不是故障。
+- **同步已改为增量**（v2.6）：日常同步只拉自上次 `rev` 之后的变更，无变更时服务端只回约 115 B 元数据（416 条库实测全量 89 KB，约 1/777）。换设备首次同步仍需分页拉全量并逐条解密写库（约 0.3 ms/条），这是不可避免的一次性成本。
 - 硬限制：单条明文 JSON ≤ 8 MB、单条密文 ≤ 12 MB、请求体 ≤ 14 MB、录音 5 分钟 / 20 段；超限服务端返回 413，前端在保存前就会拦下。**单条笔记塞太多录音或图片会顶到这个上限**。
-- 建议：单库控制在几千条以内；长期不用的便签导出加密备份后删除（备份可随时再导入）；别让待同步队列长期积压。上万条请先做增量同步改造（`?since=`）再扩容。
+- 建议：单库控制在几千条以内；长期不用的便签导出加密备份后删除（备份可随时再导入）；别让待同步队列长期积压。上万条时列表仍只渲染前 200 条、搜索走倒排索引，但冷启动一次性解密全部密文的时间会线性增长，这是当前架构的剩余上限。
+
+### 鸿蒙 7.0 / 卓易通兼容性
+
+APK 是 WebView 容器，真正的兼容风险来自兼容层里的 WebView 实现（版本、回调、API 缺口），而不是原生代码。v2.6 做了这些加固（`tools/test_harmony_compat.js` 静态回归 17 项）：
+
+| 风险点 | 处理 |
+| --- | --- |
+| 只回调旧版 `shouldInterceptRequest(WebView, String)`（API 11+） | 新旧两个重载都转发到同一套 `interceptUri()`，否则虚拟域资源全 404 → 白屏 / 502 |
+| 不回调 `setOnApplyWindowInsetsListener` | 1.2 秒后用系统 `status_bar_height` / `navigation_bar_height` 兜底写 CSS `--nn-safe-*`，页面重载再补写一次 |
+| `dialog.showModal()` 缺失 | 早已统一走 `openDialog()`，降级 `show()` / `open` 属性 + `.dialog-fallback` |
+| `crypto.subtle` 缺失（虚拟域不被当安全上下文） | `cryptofb.js` 纯 JS WebCrypto 兜底接管；`getRandomValues` 缺失则明确报错，**不提供弱随机** |
+| `TextEncoder/TextDecoder`、`closest`、`NodeList.forEach`、`Object.assign`、`Array.from`、`Blob.text` 等缺失 | `static/compat.js` 用纯 ES5 补齐，能力报告写到 `window.__NN_CAPS__` 与控制台，fatal 诊断面板可收集 |
+| `fetch` / `Response` 构造器缺失或抛异常 | `_bridge.js` 提供 XHR 版 fetch 兜底与鸭子类型 response；备份导出用 FileReader 兜底 |
+| `100dvh` / `env(safe-area-inset-*)` 不识别 | 先写 `100vh` 与 `0px` 降级声明，再写新特性声明，老引擎丢弃后者、保留前者 |
+| 兼容层默认禁止明文 HTTP | `AndroidManifest.xml` 已显式 `usesCleartextTraffic="true"`；原生桥走 `HttpURLConnection`，不受 WebView 混合内容限制 |
+
+- 前端 JS 语法保持 ES2017 级别：不使用 `?.`、`??`、`globalThis` 等 ES2020+ 写法；新增的 `compat.js` / `nn-index.js` 全篇 ES5，保证垫片本身能在老引擎上解析。
+- 不含任何 CDN / 外链 / 第三方 SDK，离线即可运行。真出问题时：白屏先降级到全内联页，仍失败则摊开诊断（WebView 包名版本、UA、控制台错误、`[compat]` 降级项），截图反馈即可定位。
+- **说明**：鸿蒙原生（ArkTS / ArkWeb）版本不是把 APK 改名就能跑；上述加固是把「卓易通等安卓兼容层」这一路径走稳。若后续做原生鸿蒙版，前端 `static/` 可直接复用（无安卓专属 API），需要重写的是壳层：原生通道、文件/录音权限与安全区注入。
 
 ### 已知限制
 
@@ -186,10 +226,11 @@ Web UI →「设置」→「加密备份」：
 | POST | `/api/logout` | 注销当前会话 |
 | GET | `/api/account` | 当前账户名 |
 | PUT | `/api/account` | 改名/改密（`current_password` + 可选 `new_password` + 改密时必带重包裹 `vault`，同事务原子替换，成功后撤销全部旧会话；仍兼容旧版 credential 字段） |
-| GET | `/api/meta` | 读取加密库参数（salt/wrapped/iterations/version） |
+| GET | `/api/meta` | 读取加密库参数（salt/wrapped/iterations/version，附 `epoch` 代际） |
 | PUT | `/api/meta` | 初始化加密库（只允许一次，已初始化返回 409；`replace:true` 用于旧库迁移替换） |
 | DELETE | `/api/vault` | `{"confirm":"RESET"}` 清空加密库与全部密文（口令丢失逃生口） |
-| GET | `/api/notes` | 拉取全部便签（含墓碑） |
+| GET | `/api/notes` | 拉取全部便签（含墓碑），老客户端兼容路径 |
+| GET | `/api/notes?since=<rev>` | **增量拉取**：只回 `rev > since` 的变更，按 `rev` 升序分页；响应含 `rev` / `epoch` / `partial` / `nextSince`，单页最多 400 条 |
 | PUT | `/api/notes/{id}` | 写入/更新密文便签（旧时间戳会被拒绝） |
 | DELETE | `/api/notes/{id}` | 软删除（保留密文墓碑） |
 
@@ -215,6 +256,9 @@ PORT=8080 DATA_DIR=./data python server.py
 node --check static/app.js
 node --check static/md.js
 node --check static/html2md.js
+node --check static/cryptofb.js
+node --check static/compat.js
+node --check static/nn-index.js
 node --check static/sw.js
 
 # 桩测（零依赖，全部本地跑）
@@ -232,6 +276,10 @@ node tools/test_offline_sync.js        # 离线库→手动连 NAS→密文上�
 node tools/test_login_server.js        # 登录页 NAS 地址：回填/归一化/登录前落盘 8 项（含真实浏览器）
 node tools/test_mobile_layout.js      # 手机布局：分类抽屉 + 状态栏安全区 30 项（含真实浏览器截图）
 node tools/test_scale.js           # 大规模数据压测 + 5 项回归（真实浏览器 + 真实 server.py）
+python tools/test_incremental_sync.py  # 服务端 rev/分页/墓碑/epoch + 全量 vs 增量流量 31 项
+node tools/test_search_index.js        # 内存全文索引：1000 条/200 查询与全量扫描等价 13 项
+node tools/test_harmony_compat.js      # 鸿蒙 7.0 / 卓易通兼容静态回归 17 项
+node tools/test_client_sync.js         # 客户端增量同步端到端 28 项（真实浏览器 + 真实 server.py）
 ```
 
 `test_rich_editor.js` 会启动一个临时本地静态服务，再用系统自带 Edge/Chrome 的 headless 模式跑 `tools/rich-fixture.html`：把 16 组 Markdown 渲染成 DOM，序列化回 Markdown，再渲染一遍，要求两次 HTML 完全一致（含代码块、表格、任务列表、图片占位、字号包裹）。找不到浏览器时该用例自动跳过。
