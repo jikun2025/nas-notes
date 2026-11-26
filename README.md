@@ -36,6 +36,8 @@
 
 飞牛 NAS 用户也可以使用图形界面：Docker → Compose → 新增项目 → 项目路径选择该目录 → 创建项目。
 
+**升级已有部署**：`server.py` 是打进镜像的（不是挂载），所以每次升级都要 `docker compose build && docker compose up -d`；只重建容器不会换代码。升级前先备份 `data/notes.db`。从 v2.5 及更早升到 v2.6 时，服务端会就地为 `notes` 表补 `rev` 列并回填历史条目，数据与 `vault` 不受影响；客户端（浏览器 PWA 强刷 / 手机换 APK）可以晚一步升级，老客户端不带 `since` 时服务端仍按全量返回。
+
 ### 手机端（安卓）
 
 1. **必须先配置 HTTPS**。`http://NAS_IP:28080` 下 Service Worker 和 WebCrypto 不可用，PWA 无法离线。推荐用飞牛自带反向代理 + 域名证书，或 Nginx Proxy Manager / Caddy，把 HTTPS 域名反代到容器 `8080` 端口（即宿主 `28080`）。
@@ -280,6 +282,9 @@ python tools/test_incremental_sync.py  # 服务端 rev/分页/墓碑/epoch + 全
 node tools/test_search_index.js        # 内存全文索引：1000 条/200 查询与全量扫描等价 13 项
 node tools/test_harmony_compat.js      # 鸿蒙 7.0 / 卓易通兼容静态回归 17 项
 node tools/test_client_sync.js         # 客户端增量同步端到端 28 项（真实浏览器 + 真实 server.py）
+
+# 部署后冒烟（可指向线上或临时实例，会写测试数据，别指向正式库）
+python tools/verify_deploy.py http://192.168.5.10:28081
 ```
 
 `test_rich_editor.js` 会启动一个临时本地静态服务，再用系统自带 Edge/Chrome 的 headless 模式跑 `tools/rich-fixture.html`：把 16 组 Markdown 渲染成 DOM，序列化回 Markdown，再渲染一遍，要求两次 HTML 完全一致（含代码块、表格、任务列表、图片占位、字号包裹）。找不到浏览器时该用例自动跳过。
@@ -287,6 +292,8 @@ node tools/test_client_sync.js         # 客户端增量同步端到端 28 项�
 `test_shell_assets.js` 是纯静态检查：它盯着几个曾经真出过事的地方——`WebResourceResponse` 的第二个参数是字符编码而不是 MIME 子类型（写成 `("text","html")` 会让 WebView 把首页当纯文本，手机上一片白）、内联替换串必须和 `static/index.html` 的标签逐一对应、原生桥要把 headers 的 JSON 文本解析成对象。
 
 后端 API 测试覆盖：登录/会话、密文读写、冲突裁决、软删除、改密原子性与旧会话撤销、登录限速、静态穿越；前端用 Node 内置 `crypto` 验证 AES-GCM 往返与错误口令拒绝。
+
+`verify_deploy.py` 是**部署后冒烟**，不是单元测试：它对着一个真实实例（默认临时容器 `-p 28081:8080` + 独立 volume，不要指向正式库）把增量协议走一遍——默认账户登录、写两条拿 `rev`、`since=0` 全量、无变更时增量必须为空、新增只拉 1 条、删除以墓碑下发、过期写入被 LWW 拒绝且不占 `rev`、非法/超前游标不报错、40 条库的全量 vs 空增量流量比，最后校验静态资源（`index.html` 脚本顺序、SW 版本、`nn-index.js` 可下载）。它验证的是「镜像里跑起来的那份代码」，能抓到「代码合了但 NAS 上还是旧镜像」这类问题。
 
 ## 与同类项目的区别
 
