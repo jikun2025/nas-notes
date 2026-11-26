@@ -139,6 +139,23 @@ gradle assembleRelease
 - 如果服务器上已存在**另一套**加密库（密钥不同），同步会直接停下并提示，不会覆盖任何一边；要改用服务器库必须先导出本机备份。
 - 「锁定」只清内存明文与密钥，不再撤销会话，所以解锁后可以直接同步，不必重新输密码。
 
+### 容量与性能边界（实测）
+
+APK 只有约 110 KB，因为它是**一个 WebView 壳 + 约 320 KB 未压缩的纯文本源码**（HTML / CSS / JS / 图标），不含浏览器内核、不含任何第三方 SDK、不含原生 `.so` 库；压缩后约 109 KB。功能相近的商业笔记 App 动辄几十 MB，主要来自内置渲染引擎/编辑器框架、React Native 或 Flutter 运行时、统计/推送/登录 SDK、多套分辨率资源与字体。
+
+轻量化不等于不可靠，但确实有边界。用真实 Chromium + 真实 `server.py` 压测（`node tools/test_scale.js`，结果写入 `.tmp/scale-results.json`）：
+
+| 便签数 | 冷启动解密 | 列表渲染（优化前） | 列表渲染（现在） | 搜索一次（现在） | 单条保存 | 列表 DOM 节点 |
+| --- | --- | --- | --- | --- | --- | --- |
+| 1,000 | 7 ms | 49 ms | 9 ms | 16 ms | 0.6 ms | 819（只渲染前 200 条） |
+| 3,000 | 23 ms | 136 ms | 9 ms | 30 ms | 0.5 ms | 819（只渲染前 200 条） |
+
+- **加密与单条写入不随数据量变慢**：AES-GCM 解密 3000 条仅 23 ms；单条编辑保存恒定约 0.5 ms（只重加密并写入这一条，不碰全量）。
+- 优化前列表会把全部便签一次性变成 DOM（3000 条 = 12018 节点 / 757 KB HTML），搜索每敲一个字全量重渲染。现在默认只渲染前 200 条（底部「显示全部」可展开），搜索输入 120 ms 防抖，正文→纯文本延迟解析并缓存：连打 10 个字只重建 1 次列表。
+- **同步是全量模型**：每次手动同步都 `GET /api/notes` 取回全部密文。服务端实测 5,000 条约 10.6 MB / 95 ms（局域网），换设备首次同步还要逐条解密写库（约 0.36 ms/条）。便签越多，单次同步越慢、手机内存压力越大——这是当前架构的主要上限，不是故障。
+- 硬限制：单条明文 JSON ≤ 8 MB、单条密文 ≤ 12 MB、请求体 ≤ 14 MB、录音 5 分钟 / 20 段；超限服务端返回 413，前端在保存前就会拦下。**单条笔记塞太多录音或图片会顶到这个上限**。
+- 建议：单库控制在几千条以内；长期不用的便签导出加密备份后删除（备份可随时再导入）；别让待同步队列长期积压。上万条请先做增量同步改造（`?since=`）再扩容。
+
 ### 已知限制
 
 - 单用户设计：一个账户、无注册系统（默认 admin/admin，登录后在「设置」中改名改密）。不要把服务直接暴露公网，建议配合 HTTPS 反代 + 访问控制。
@@ -206,7 +223,7 @@ node tools/test_cryptofb.js            # crypto 兜底层与 Node 字节级互�
 node tools/test_legacy_migration.js    # 旧库→wkey 包裹结构端到端迁移 16 项
 node tools/test_md_table_fs.js         # Markdown 表格/字号渲染 22 项
 node tools/test_login_ui.js            # 登录页隐藏字段/清库警示/NAS 地址框静态回归 10 项
-node tools/test_ui_overhaul.js         # 三区布局/工具栏两行与手机横滑/标题计数与保存/两级设置/右键菜单/分类清单 18 项
+node tools/test_ui_overhaul.js         # 三区布局/工具栏两行与手机横滑/标题计数与保存/两级设置/右键菜单/分类清单 21 项
 node tools/test_rich_editor.js         # 富文本模式结构 + HTML→Markdown 往返稳定 11 项（含真实浏览器）
 node tools/test_shell_assets.js        # 安卓壳：内联页/MIME 编码/原生桥/打包配置 7 项
 node tools/test_shell_page.js          # 安卓壳内联页真实浏览器渲染 + 桥接 6 项
@@ -214,6 +231,7 @@ node tools/test_offline_mode.js        # 离线独立：本机建库→断网读
 node tools/test_offline_sync.js        # 离线库→手动连 NAS→密文上云 10 项（含真实浏览器 + 真实 server.py）
 node tools/test_login_server.js        # 登录页 NAS 地址：回填/归一化/登录前落盘 8 项（含真实浏览器）
 node tools/test_mobile_layout.js      # 手机布局：分类抽屉 + 状态栏安全区 30 项（含真实浏览器截图）
+node tools/test_scale.js           # 大规模数据压测 + 5 项回归（真实浏览器 + 真实 server.py）
 ```
 
 `test_rich_editor.js` 会启动一个临时本地静态服务，再用系统自带 Edge/Chrome 的 headless 模式跑 `tools/rich-fixture.html`：把 16 组 Markdown 渲染成 DOM，序列化回 Markdown，再渲染一遍，要求两次 HTML 完全一致（含代码块、表格、任务列表、图片占位、字号包裹）。找不到浏览器时该用例自动跳过。

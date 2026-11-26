@@ -2208,6 +2208,11 @@ function notesInActiveFolder() {
     });
 }
 
+// 列表一次最多渲染多少条。全量缓存、搜索与计数仍基于全部便签，只是不把
+// 几千个 DOM 节点一次性塞进页面（移动端 WebView 会明显掉帧）。
+const LIST_RENDER_LIMIT = 200;
+let listShowAll = false;
+
 function visibleNotes() {
   const query = els.searchInput.value.trim().toLowerCase();
   return notesInActiveFolder()
@@ -2215,12 +2220,16 @@ function visibleNotes() {
       note,
       plain: plainCache.get(note.id) || { title: '（无法解密）', body: '', folder: '' }
     }))
-    .filter((item) => !query
-      || (item.plain.title || '').toLowerCase().includes(query)
-      || bodyText(item.plain).toLowerCase().includes(query)
-      || (item.plain.folder || '').toLowerCase().includes(query)
-      || (item.plain.attachments || []).some((att) =>
-        (att.name || '').toLowerCase().includes(query)))
+    .filter((item) => {
+      if (!query) return true;   // 无搜索时不必解析正文，列表只渲染前 200 条
+      const text = bodyText(item.plain);
+      item.text = text;          // 缓存给列表摘要复用，避免二次解析
+      return (item.plain.title || '').toLowerCase().includes(query)
+        || text.toLowerCase().includes(query)
+        || (item.plain.folder || '').toLowerCase().includes(query)
+        || (item.plain.attachments || []).some((att) =>
+          (att.name || '').toLowerCase().includes(query));
+    })
     .sort((a, b) => String(b.note.updated_at).localeCompare(String(a.note.updated_at)));
 }
 
@@ -2228,7 +2237,7 @@ function noteItemHTML(item, query) {
   const images = inlineImageCount(item.plain);
   const audios = (item.plain.attachments || []).filter((att) => att.kind === 'audio').length;
   const attachmentHint = (images ? ` 🖼${images}` : '') + (audios ? ` 🎤${audios}` : '');
-  const snippet = (bodyText(item.plain).slice(0, 80) || '（空便签）') + attachmentHint;
+  const snippet = ((item.text || bodyText(item.plain)).slice(0, 80) || '（空便签）') + attachmentHint;
   return '<button class="note-item' + (item.note.id === currentId ? ' active' : '') +
     '" type="button" data-id="' + esc(item.note.id) + '">' +
     '<div class="item-title">' + highlight(item.plain.title || '（无标题）', query) + '</div>' +
@@ -2241,7 +2250,7 @@ function renderList() {
   renderFolderRail();
   const query = els.searchInput.value.trim().toLowerCase();
   const items = visibleNotes();
-  const total = notesInActiveFolder().length;
+  const total = query ? notesInActiveFolder().length : items.length;
   els.searchCount.textContent = query ? `${items.length}/${total}` : `${total} 条`;
 
   if (items.length === 0) {
@@ -2251,9 +2260,15 @@ function renderList() {
     return;
   }
 
+  // 大列表只把前 LIST_RENDER_LIMIT 条变成 DOM，其余用底部按钮按需展开；
+  // 计数、分类栏、搜索仍按全量计算，数据一条不少。
+  const shown = (listShowAll || items.length <= LIST_RENDER_LIMIT)
+    ? items : items.slice(0, LIST_RENDER_LIMIT);
+  const hiddenCount = items.length - shown.length;
+
   // 一级 = 分类，二级 = 该分类下的便签标题；「未分类」固定排最后
   const groups = new Map();
-  items.forEach((item) => {
+  shown.forEach((item) => {
     const folder = (item.plain.folder || '').trim().slice(0, 100) || UNGROUPED;
     if (!groups.has(folder)) groups.set(folder, []);
     groups.get(folder).push(item);
@@ -2275,7 +2290,10 @@ function renderList() {
     const body = collapsed ? '' : '<div class="folder-group-body">' +
       list.map((item) => noteItemHTML(item, query)).join('') + '</div>';
     return '<div class="folder-group">' + head + body + '</div>';
-  }).join('');
+  }).join('') + (hiddenCount
+    ? '<button id="listMoreBtn" class="list-more" type="button">仅显示前 ' + shown.length +
+      ' 条，还有 ' + hiddenCount + ' 条 · 点此显示全部</button>'
+    : '');
 }
 
 // 字数统计：标题计数固定显示在输入框内，正文计数在页脚（取渲染后的可见文字，不含 Markdown 符号）
@@ -2810,6 +2828,11 @@ els.newBtn.addEventListener('click', () => {
 
 els.noteList.addEventListener('click', (event) => {
   if (longPressFired) { longPressFired = false; return; }
+  if (event.target.closest('#listMoreBtn')) {
+    listShowAll = true;
+    renderList();
+    return;
+  }
   const head = event.target.closest('.folder-group-head');
   if (head) {
     const folder = head.dataset.folder || '';
@@ -3045,7 +3068,13 @@ function syncFolderDialogNew() {
 }
 els.folderDialogSelect.addEventListener('change', syncFolderDialogNew);
 
-els.searchInput.addEventListener('input', renderList);
+// 搜索每敲一字都会全量过滤 + 重建列表；120ms 防抖把连打十几个字
+// 从十几次渲染收敛成一次（几千条便签时差别是秒级）。
+let searchRenderTimer = 0;
+els.searchInput.addEventListener('input', () => {
+  clearTimeout(searchRenderTimer);
+  searchRenderTimer = setTimeout(renderList, 120);
+});
 els.syncBtn.addEventListener('click', () => { clearTimeout(syncTimer); doManualSync(); });
 
 // 分类筛选：左栏按钮（宽屏常驻 / 窄屏抽屉）与列表上方下拉共用同一状态。
@@ -3053,12 +3082,14 @@ els.folderRail.addEventListener('click', (event) => {
   const btn = event.target.closest('[data-folder]');
   if (!btn) return;
   activeFolder = btn.dataset.folder || '';
+  listShowAll = false;
   renderList();
   // 手机上选完分类就把抽屉收起来，否则挡着列表看不到结果
   if (railIsDrawer()) closeRail();
 });
 els.folderFilter.addEventListener('change', () => {
   activeFolder = els.folderFilter.value || '';
+  listShowAll = false;
   renderList();
 });
 

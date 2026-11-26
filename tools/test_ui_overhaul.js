@@ -255,4 +255,31 @@ ok('Service Worker 缓存已升版', () => {
   assert.ok(cachedVer >= 25, 'CACHE 版本需 >= 25，当前 ' + cachedVer);
 });
 
+ok('大列表分批渲染：只画前 200 条，其余按需展开', () => {
+  assert.match(app, /const LIST_RENDER_LIMIT = 200;/);
+  assert.match(app, /const shown = \(listShowAll \|\| items\.length <= LIST_RENDER_LIMIT\)/);
+  assert.match(app, /const hiddenCount = items\.length - shown\.length;/);
+  assert.match(app, /shown\.forEach\(\(item\) => \{/);
+  assert.match(app, /id="listMoreBtn" class="list-more"/);
+  assert.match(app, /event\.target\.closest\('#listMoreBtn'\)/);
+  assert.match(app, /listShowAll = false;\s*\n\s*renderList\(\);/);
+  assert.match(read('style.css'), /\.list-more\s*\{/);
+});
+
+ok('搜索输入防抖，连打字不逐字重建列表', () => {
+  assert.match(app, /let searchRenderTimer = 0;/);
+  assert.match(app, /clearTimeout\(searchRenderTimer\)/);
+  assert.match(app, /searchRenderTimer = setTimeout\(renderList, 120\)/);
+  assert.doesNotMatch(app, /searchInput\.addEventListener\('input', renderList\)/);
+});
+
+ok('正文纯文本延迟解析并缓存，搜索与摘要不重复算', () => {
+  const block = app.slice(app.indexOf('function visibleNotes()'),
+    app.indexOf('function noteItemHTML'));
+  assert.match(block, /if \(!query\) return true;/);
+  assert.match(block, /item\.text = text;/);
+  assert.match(app, /item\.text \|\| bodyText\(item\.plain\)/);
+  assert.match(app, /const total = query \? notesInActiveFolder\(\)\.length : items\.length;/);
+});
+
 console.log('\nUI overhaul tests: ' + pass + ' pass');

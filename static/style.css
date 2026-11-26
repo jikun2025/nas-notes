@@ -244,6 +244,13 @@ button.sync-chip.error:hover { border-color: var(--danger); }
 .item-time { color: var(--muted); font-size: 11px; margin-top: 6px; opacity: .8; }
 mark { background: var(--mark); color: inherit; border-radius: 2px; padding: 0 1px; }
 .empty-state { margin: 30px 12px; text-align: center; color: var(--muted); line-height: 1.8; }
+.list-more {
+  display: block; width: calc(100% - 16px); margin: 6px 8px 14px;
+  padding: 10px 12px; border: 1px dashed var(--border); border-radius: 9px;
+  background: var(--panel-soft); color: var(--muted); font-size: 12px;
+  cursor: pointer; text-align: center;
+}
+.list-more:hover { color: var(--primary); border-color: var(--primary); background: var(--primary-soft); }
 .empty-state .empty-icon { display: block; font-size: 30px; margin-bottom: 8px; opacity: .65; }
 
 /* ---------- 区域三：编辑器 / 预览 ---------- */
