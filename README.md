@@ -1,8 +1,54 @@
 # 轻签 · NasNotes
 
+[![CI](https://github.com/S-kun/nas-notes/actions/workflows/ci.yml/badge.svg)](https://github.com/S-kun/nas-notes/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+
+后端 Python 3.9+ 标准库 · 前端零依赖 PWA · 端到端加密 · MIT
+
 一个为个人 NAS 设计的轻量加密便签：单容器后端 + PWA 前端，浏览器和安卓手机都能读写、离线编辑与同步，全文搜索在本地明文内存中完成。服务端与手机缓存只保存 AES-GCM 密文，不保存明文，也不保存加密口令。
 
 适合记录账号、密码提示、配置片段、临时备忘等短文本，可在正文中插入图片并附带语音。**它不是多用户协作知识库，也没有版本历史和多级文件夹；富文本模式覆盖标题、加粗、列表、引用、表格、图片等常用排版，不做精细字处理。**
+
+![桌面端](docs/screenshots/desktop.png)
+
+<img src="docs/screenshots/mobile.png" width="330" alt="手机端">
+
+## 首次启动与默认账户
+
+- **发布版不含任何账户、便签或备份**：仓库里没有数据库，镜像首次启动只会建一个空库。
+- 首次启动自动创建默认账户 **admin / admin**（可用 `NOTES_USER` / `NOTES_PASS` 覆盖，**仅首次建库生效**，之后再改 .env 无效）；服务端日志会打印 `已创建默认账户 admin / admin`。
+- ⚠️ **登录后第一件事是改账户与口令**：口令同时用于包裹加密库密钥（wkey），改密会原子重包裹，旧口令立即失效。留着 admin/admin，等于把库的钥匙挂在门上。
+- **升级不会重置**：已有 `data/notes.db` 的实例升级到 v2.6 仍是原来的账户与数据，不会出现 admin/admin。
+- **要清空数据**（从零开始）：「设置 → 数据与备份 → 清空数据」，需手动输入「清空数据」确认；或 `DELETE /api/vault` 带 `{"confirm":"RESET"}`。它删除 `vault` 与**全部便签**，`accounts` 表不动（账户保留），同时 `epoch + 1` 让各客户端下次同步自动全量对齐。连账户一起重置只能停服后删除 `data/notes.db` 再启动，不可恢复。
+- 完整发布说明见 [RELEASE_NOTES.md](RELEASE_NOTES.md)。
+
+## 获取
+
+直连仓库：
+
+```bash
+git clone https://github.com/S-kun/nas-notes.git
+```
+
+国内网络可用加速前缀或镜像（前缀方式把原地址整段接在后面，任选一个能通的）：
+
+```bash
+# 加速前缀（推荐，跟随官方仓库，不用等镜像同步）
+git clone https://ghfast.top/https://github.com/S-kun/nas-notes.git
+git clone https://ghproxy.net/https://github.com/S-kun/nas-notes.git
+git clone https://gh-proxy.com/https://github.com/S-kun/nas-notes.git
+
+# 镜像站
+git clone https://github.kkgithub.com/S-kun/nas-notes.git
+```
+
+安卓 APK 挂在 Releases：从 [Releases](https://github.com/S-kun/nas-notes/releases) 下载 `nas-notes-shell-v2.6.apk`；下载慢时同样加前缀：
+
+```
+https://ghfast.top/https://github.com/S-kun/nas-notes/releases/download/v2.6/nas-notes-shell-v2.6.apk
+```
+
+> APK 登录页预填的地址只是示例（作者环境），首次登录请改成你自己的 `NAS_IP:端口`；填过一次会存进原生配置。更推荐从源码自己 `gradle assembleRelease` 打包，签名在你手里。
 
 ## 功能
 
@@ -284,7 +330,7 @@ node tools/test_harmony_compat.js      # 鸿蒙 7.0 / 卓易通兼容静态回�
 node tools/test_client_sync.js         # 客户端增量同步端到端 28 项（真实浏览器 + 真实 server.py）
 
 # 部署后冒烟（可指向线上或临时实例，会写测试数据，别指向正式库）
-python tools/verify_deploy.py http://192.168.5.10:28081
+python tools/verify_deploy.py http://NAS_IP:28081
 ```
 
 `test_rich_editor.js` 会启动一个临时本地静态服务，再用系统自带 Edge/Chrome 的 headless 模式跑 `tools/rich-fixture.html`：把 16 组 Markdown 渲染成 DOM，序列化回 Markdown，再渲染一遍，要求两次 HTML 完全一致（含代码块、表格、任务列表、图片占位、字号包裹）。找不到浏览器时该用例自动跳过。

@@ -26,6 +26,6 @@ echo "== 健康检查 =="
 curl -sf http://127.0.0.1:28080/api/health && echo || echo "健康检查未通过，查看日志: $DC logs --tail 50"
 
 echo "== 完成 =="
-echo "局域网访问: http://$(hostname -I 2>/dev/null | awk '{print $1}' || echo 192.168.5.10):28080"
+echo "局域网访问: http://$(hostname -I 2>/dev/null | awk '{print $1}' || echo NAS_IP):28080"
 echo "默认账户 admin / admin（或 .env 里 NOTES_USER/NOTES_PASS 指定的账户），请首次登录后在网页「设置」中修改口令。"
 echo "提醒：手机浏览器 PWA 与麦克风需要 HTTPS（反代证书）；安卓 APK 壳无需 HTTPS。"

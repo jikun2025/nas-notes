@@ -13,7 +13,7 @@ APK 的 `versionCode` / `versionName` 与此处版本号同步；PWA 只需强�
 - **鸿蒙 7.0 / 卓易通**：新增 `static/compat.js` ES5 能力垫片（TextEncoder/TextDecoder、closest、NodeList.forEach、Object.assign、Array.from、Blob.text 等）与 `window.__NN_CAPS__` 诊断；WebView 新旧两版 `shouldInterceptRequest` 都转发同一判定，安全区 insets 不回调时用系统 dimen 兜底；`_bridge.js` 补 fetch/Response/FileReader 降级；CSS 对 dvh/env 做双降级；清理 `globalThis`。原生鸿蒙（ArkWeb）版可直接复用 `static/`，只需重写壳层。
 - 测试：新增 `test_incremental_sync.py`(31) / `test_search_index.js`(13) / `test_harmony_compat.js`(17) / `test_client_sync.js`(28，真实浏览器端到端)；旧测试 `test_ui_overhaul` 断言随搜索实现更新，全套 18 套回归全绿。
 - 新增 `tools/verify_deploy.py`（部署后冒烟 25 项）：对着真实实例验证登录→写入→`since` 增量→墓碑→LWW 拒绝→游标边界→流量比→静态资源版本；用于确认「镜像里跑的确实是这份代码」。
-- 已部署到飞牛 NAS（`192.168.5.10:28080`）：升级前备份 `data/notes.db.bak-preincremental-20261126-113943`，重建镜像后容器 healthy；线上 3 条密文与 `vault` 与备份逐字节一致，`rev` 回填 1–3，`epoch=1`，账户 `jikun2002` 保留。临时实例实测：41 条库全量 15,073 B、空增量 113 B（0.7%）。
+- 已部署到飞牛 NAS 实机验证：升级前备份 `data/notes.db.bak-preincremental-*`，重建镜像后容器 healthy；线上密文与 `vault` 与备份逐字节一致，`rev` 回填 1–3，`epoch=1`。临时实例实测：41 条库全量 15,073 B、空增量 113 B（0.7%）。
 - SW 缓存 v28；APK `versionCode 26 / 2.6`。
 
 ## v2.5 — 2026-11-26

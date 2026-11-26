@@ -1,0 +1,7 @@
+# 不自动转换换行：源文件里 .js 是 CRLF、.py 是 LF，测试用例和壳内联页
+# 都按原字节读取，让 git 改写会引入整文件级 diff 并影响打包校验。
+* -text
+
+*.png binary
+*.jpg binary
+*.apk binary

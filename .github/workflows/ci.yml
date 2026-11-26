@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.9", "3.12"]
+
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python }}
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+
+      - name: 语法检查
+        run: |
+          python -m py_compile server.py tools/test_auth_api.py tools/test_incremental_sync.py tools/verify_deploy.py
+          for f in static/*.js android/app/src/main/assets/_bridge.js tools/*.js; do node --check "$f"; done
+
+      - name: 服务端 API（账户/会话/改密/限速/穿越）
+        run: python tools/test_auth_api.py
+
+      - name: 增量同步协议（rev/分页/墓碑/epoch/流量）
+        run: python tools/test_incremental_sync.py
+
+      - name: 加密与渲染（Node 内置 crypto）
+        run: |
+          node tools/test_cryptofb.js
+          node tools/test_md_table_fs.js
+
+      - name: 前端静态回归
+        run: |
+          node tools/test_login_ui.js
+          node tools/test_ui_overhaul.js
+          node tools/test_shell_assets.js
+          node tools/test_search_index.js
+          node tools/test_harmony_compat.js
+
+      # 需要浏览器的用例（rich_editor / shell_page / offline_* / mobile_layout /
+      # client_sync / scale）在 ubuntu runner 上没有 Edge，本地跑：见 README。
