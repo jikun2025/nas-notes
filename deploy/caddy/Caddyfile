@@ -1,0 +1,15 @@
+# 轻签（nas-notes）HTTPS 反代
+# 监听宿主 28443 → 内网 nas-notes:8080；证书为自签 CA 签发的 10 年长期证书（SAN: 192.168.5.10）
+{
+	admin off
+}
+
+:28443 {
+	tls /certs/server.crt /certs/server.key
+	reverse_proxy nas-notes:8080 {
+		header_up X-Forwarded-Proto https
+	}
+	encode gzip
+	header Strict-Transport-Security "max-age=31536000"
+	header X-Content-Type-Options "nosniff"
+}

@@ -5,9 +5,9 @@ services:
     container_name: nas-notes
     restart: unless-stopped
     ports:
-      # 宿主 28080 → 容器 8080（NAS 上 8080 已被 reader 容器占用）
-      # 仅给反向代理使用；手机端 PWA 离线需要 HTTPS，请配合反代域名访问
-      - "28080:8080"
+      # 只绑回环：外部一律走下方 proxy 的 HTTPS（28443）。
+      # 8080 在 NAS 上被 reader 占用，故仍映射一个宿主端口，但仅限本机调试。
+      - "127.0.0.1:28080:8080"
     environment:
       PORT: "8080"
       DATA_DIR: "/data"
@@ -23,3 +23,17 @@ services:
       interval: 30s
       timeout: 5s
       retries: 3
+
+  # HTTPS 反向代理：https://192.168.5.10:28443（自签 CA，证书见 deploy/caddy/certs/）
+  # 与 nas-notes 同一 compose 网络，可直接按服务名反代。
+  proxy:
+    image: caddy:2-alpine
+    container_name: nas-notes-proxy
+    restart: unless-stopped
+    depends_on:
+      - nas-notes
+    ports:
+      - "28443:28443"
+    volumes:
+      - ./deploy/caddy/Caddyfile:/etc/caddy/Caddyfile:ro
+      - ./deploy/caddy/certs:/certs:ro
