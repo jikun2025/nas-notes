@@ -66,9 +66,10 @@ const origin = 'http://127.0.0.1:' + port;
 
 const FAKE_NATIVE = `<script>
   window.__calls = [];
+  window.__serverSet = [];
   window.NasNative = {
     getServer: function () { return 'http://127.0.0.1:1'; },
-    setServer: function () {},
+    setServer: function (v) { window.__serverSet.push(v); },
     apiAsync: function (cb, method, p) {
       window.__calls.push(method + ' ' + p);
       setTimeout(function () { window[cb](200, '{"content-type":"application/json"}', '{"ok":true}'); }, 0);
@@ -98,6 +99,7 @@ const PROBE = `<script>
       document.body.appendChild(box);
     }); }).catch(function (e) {
       info.bridgeError = String(e && e.message);
+      info.calls = window.__calls;
       box.textContent = JSON.stringify(info);
       document.body.appendChild(box);
     });
@@ -136,7 +138,7 @@ server.listen(port, '127.0.0.1', () => {
       ok('内联页渲染出登录界面，而不是空白', () => {
         if (!info.lock) throw new Error('缺少 #lockScreen');
         if (!(info.textLen > 40)) throw new Error('正文过短 textLen=' + info.textLen);
-        if (info.title !== '登录轻签') throw new Error('标题异常：' + info.title);
+        if (!/轻签/.test(info.title)) throw new Error('标题异常：' + info.title);
         if (info.inputs < 2) throw new Error('登录输入框数量异常：' + info.inputs);
         if (info.styles < 1) throw new Error('样式表未生效');
       });

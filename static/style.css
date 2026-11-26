@@ -127,6 +127,20 @@ button.small { padding: 6px 11px; font-size: 12px; }
 .badge.error { background: var(--danger-soft); color: var(--danger); }
 .badge.ok { background: rgba(22, 150, 106, .12); color: var(--accent-green); }
 
+/* 列表头部的同步状态胶囊：既是状态显示，也是手机端唯一显眼的手动同步入口
+   （≤1180px 时侧栏整块隐藏，没有它就没法手动同步）。 */
+button.sync-chip {
+  border: 1px solid transparent;
+  font-family: inherit; letter-spacing: .01em;
+  max-width: 100%; overflow: hidden; text-overflow: ellipsis;
+}
+button.sync-chip:hover { background: var(--primary-soft); border-color: var(--primary); }
+button.sync-chip.offline { border-color: var(--border); }
+button.sync-chip.offline:hover { border-color: var(--border-strong); color: var(--text-soft); }
+button.sync-chip.ok:hover { border-color: var(--accent-green); }
+button.sync-chip.error:hover { border-color: var(--danger); }
+.lock-card #lockLocalBtn { margin-top: 10px; }
+
 /* ---------- 区域二：便签列表 ---------- */
 .note-pane {
   width: 320px; flex: none;
@@ -439,6 +453,21 @@ dialog input:focus, dialog select:focus { border-color: var(--primary); }
 .muted { color: var(--muted); font-size: 12px; line-height: 1.65; }
 .settings-lead { margin: 0 0 16px; padding: 10px 12px; border-radius: 9px; background: var(--panel-soft); color: var(--text-soft); font-size: 12px; line-height: 1.7; }
 
+/* 设置 → 同步：本机状态卡片 */
+.sync-card {
+  border: 1px solid var(--border); border-radius: 10px;
+  background: var(--panel-soft); padding: 2px 12px; margin-bottom: 14px;
+}
+.sync-card-row {
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 8px 0; font-size: 12px; border-bottom: 1px solid var(--border);
+}
+.sync-card-row:last-child { border-bottom: 0; }
+.sync-card-row span { color: var(--muted); flex: none; }
+.sync-card-row b { font-weight: 600; text-align: right; word-break: break-all; min-width: 0; }
+.settings-sep { border: 0; border-top: 1px solid var(--border); margin: 18px 0 6px; }
+.error-text { color: var(--danger) !important; }
+
 .settings-dialog { width: min(860px, calc(100% - 32px)); padding: 0; overflow: hidden; }
 .settings-shell { display: flex; min-height: 460px; max-height: min(660px, 86vh); }
 .settings-nav {
@@ -501,6 +530,14 @@ dialog input:focus, dialog select:focus { border-color: var(--primary); }
 .reset-warning { color: var(--danger); font-size: 12px; line-height: 1.6; margin: 0 0 10px; }
 .reset-panel input { margin-bottom: 8px; }
 .lock-error { color: var(--danger); font-size: 13px; margin: 12px 0 0; }
+/* 登录页的 NAS 地址（仅安卓壳显示） */
+.lock-server { margin: 4px 0 2px; }
+.lock-server-row { display: flex; gap: 8px; align-items: center; }
+.lock-server-row input { flex: 1; min-width: 0; }
+.lock-server-row button { flex: none; padding: 9px 14px; }
+.lock-server-state { font-size: 12px; margin: 8px 0 0; color: var(--muted); }
+.lock-server-state.ok { color: var(--accent-green); }
+.lock-server-state.bad { color: var(--danger); }
 button.block { display: block; width: 100%; margin-top: 18px; padding: 11px; }
 .tiny { font-size: 11px; margin-top: 16px; }
 .linkbtn { border: 0; background: transparent; padding: 0; color: var(--primary); font-size: inherit; text-decoration: underline; }

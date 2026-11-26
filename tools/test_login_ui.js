@@ -53,7 +53,29 @@ ok('服务端清库只删 vault 与 notes，不动 accounts', () => {
 });
 
 ok('Service Worker 缓存已升版', () => {
-  assert.match(sw, /const CACHE = 'nas-notes-v21'/);
+  const cached = Number((/const CACHE = 'nas-notes-v(\d+)'/.exec(sw) || [0, '0'])[1]);
+  assert.ok(cached >= 22, 'CACHE 版本需 >= 22，当前 ' + cached);
+});
+
+ok('登录页有 NAS 地址框且默认隐藏（仅安卓壳显示）', () => {
+  assert.match(html, /id="lockServerBlock"[^>]*\shidden/);
+  assert.match(html, /id="lockServerInput"/);
+  assert.match(app, /els\.lockServerBlock\.hidden = !api/);
+});
+
+ok('登录前先把 NAS 地址写进原生配置，再发登录请求', () => {
+  const block = app.slice(app.indexOf('async function handleUnlock()'), app.indexOf('async function checkLegacyVerifier'));
+  const saveAt = block.indexOf('saveServerFromLockInput()');
+  const loginAt = block.indexOf('unlockOnline(');
+  assert.ok(saveAt > 0, 'handleUnlock 未调用 saveServerFromLockInput');
+  assert.ok(loginAt > saveAt, '保存地址必须早于登录请求');
+});
+
+ok('NAS 地址归一化：补 http://、去尾斜杠、拒绝带路径', () => {
+  const block = app.slice(app.indexOf('function normalizeServerUrl'), app.indexOf('function fillLockServerInput'));
+  assert.match(block, /value = 'http:\/\/' \+ value/);
+  assert.match(block, /replace\(\/\\\/\+\$\/, ''\)/);
+  assert.match(block, /\^https\?/);
 });
 
 console.log('\nlogin UI tests: ' + pass + ' pass');

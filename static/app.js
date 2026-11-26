@@ -44,6 +44,10 @@ const els = {
   lockScreen: document.getElementById('lockScreen'),
   lockTitle: document.getElementById('lockTitle'),
   lockHint: document.getElementById('lockHint'),
+  lockServerBlock: document.getElementById('lockServerBlock'),
+  lockServerInput: document.getElementById('lockServerInput'),
+  lockServerTestBtn: document.getElementById('lockServerTestBtn'),
+  lockServerState: document.getElementById('lockServerState'),
   usernameInput: document.getElementById('usernameInput'),
   passphraseLabel: document.getElementById('passphraseLabel'),
   passphraseInput: document.getElementById('passphraseInput'),
@@ -51,6 +55,8 @@ const els = {
   confirmInput: document.getElementById('confirmInput'),
   lockError: document.getElementById('lockError'),
   unlockBtn: document.getElementById('unlockBtn'),
+  lockLocalBtn: document.getElementById('lockLocalBtn'),
+  lockOfflineNote: document.getElementById('lockOfflineNote'),
   resetVaultBtn: document.getElementById('resetVaultBtn'),
   resetPanel: document.getElementById('resetPanel'),
   resetConfirmInput: document.getElementById('resetConfirmInput'),
@@ -82,6 +88,19 @@ const els = {
   deviceInput: document.getElementById('deviceInput'),
   syncMode: document.getElementById('syncMode'),
   syncInterval: document.getElementById('syncInterval'),
+  syncLocalState: document.getElementById('syncLocalState'),
+  syncPendingCount: document.getElementById('syncPendingCount'),
+  syncLastAt: document.getElementById('syncLastAt'),
+  syncServerAddr: document.getElementById('syncServerAddr'),
+  syncNowSettings: document.getElementById('syncNowSettings'),
+  syncMsg: document.getElementById('syncMsg'),
+  syncLoginDialog: document.getElementById('syncLoginDialog'),
+  syncLoginHint: document.getElementById('syncLoginHint'),
+  syncUser: document.getElementById('syncUser'),
+  syncPass: document.getElementById('syncPass'),
+  syncLoginError: document.getElementById('syncLoginError'),
+  syncLoginCancel: document.getElementById('syncLoginCancel'),
+  syncLoginOk: document.getElementById('syncLoginOk'),
   imageQuality: document.getElementById('imageQuality'),
   audioQuality: document.getElementById('audioQuality'),
   exportBtn: document.getElementById('exportBtn'),
@@ -148,9 +167,22 @@ let currentId = null;
 let deviceId = '';
 let imageQuality = 'balanced';
 let audioQuality = 'balanced';
-let syncMode = 'auto';
+// 离线优先：安卓壳里界面与数据都在本机，同步必须由用户主动触发，
+// 所以壳内默认「手动」；浏览器直连 NAS 时保持自动。
+const IS_SHELL = Boolean(window.__NN_SHELL__);
+const DEFAULT_SYNC_MODE = IS_SHELL ? 'manual' : 'auto';
+const SYNC_ERR_AUTH = 'auth';
+const SYNC_ERR_NET = 'net';
+const SYNC_ERR_VAULT = 'vault';
+const SYNC_ERR_HTTP = 'http';
+
+let syncMode = DEFAULT_SYNC_MODE;
 let syncIntervalSec = SYNC_INTERVAL_DEFAULT;
 let syncing = false;
+let syncErrorKind = '';                                  // 上次同步失败的类型，用于状态文案
+let offlineReady = false;                                // 本机已有可离线解锁的加密库
+let lastSyncAt = localStorage.getItem('nn-last-sync') || '';
+let syncLoginResolve = null;
 let saveTimer = null;
 let syncTimer = null;
 let syncPollTimer = null;
@@ -403,7 +435,7 @@ function estimateTextHeavy(image) {
 
 function setBadge(text, kind) {
   els.syncBadge.textContent = text;
-  els.syncBadge.className = 'badge' + (kind ? ' ' + kind : '');
+  els.syncBadge.className = 'badge sync-chip' + (kind ? ' ' + kind : '');
 }
 
 function normalizeSyncInterval(value) {
@@ -423,18 +455,154 @@ function startAutoSync() {
   stopAutoSync();
   if (syncMode !== 'auto') return;
   syncPollTimer = setInterval(() => {
-    if (cryptoKey && navigator.onLine && !document.hidden) sync();
+    if (cryptoKey && sessionToken && navigator.onLine && !document.hidden) {
+      sync().catch(() => {});
+    }
   }, syncIntervalSec * 1000);
 }
 
-async function updateManualBadge() {
-  if (syncMode !== 'manual' || !cryptoKey) return;
+// 同步状态：列表头部那颗胶囊既是状态也是入口（手机上侧栏是隐藏的，
+// 没有它就没有任何手动同步入口）。
+function formatClock(iso) {
+  const date = new Date(iso);
+  if (Number.isNaN(date.getTime())) return '';
+  const now = new Date();
+  const hh = String(date.getHours()).padStart(2, '0');
+  const mm = String(date.getMinutes()).padStart(2, '0');
+  const sameDay = date.getFullYear() === now.getFullYear()
+    && date.getMonth() === now.getMonth() && date.getDate() === now.getDate();
+  if (sameDay) return `${hh}:${mm}`;
+  return `${date.getMonth() + 1}-${date.getDate()} ${hh}:${mm}`;
+}
+
+async function pendingSyncCount() {
   try {
-    const pending = (await idbGetAll(STORE_OUT)).length;
-    setBadge(pending ? `待同步 ${pending}` : '手动模式', pending ? 'offline' : '');
+    return (await idbGetAll(STORE_OUT)).length;
   } catch (error) {
-    console.warn('[NasNotes] count outbox failed', error);
+    return 0;
   }
+}
+
+async function updateSyncUI() {
+  if (!els.syncBadge) return;
+  const pending = cryptoKey ? await pendingSyncCount() : 0;
+  let text = '未解锁';
+  let kind = '';
+
+  if (!cryptoKey) {
+    text = '未解锁';
+  } else if (syncing) {
+    text = '同步中…';
+  } else if (syncErrorKind === SYNC_ERR_AUTH) {
+    text = '需登录同步';
+    kind = 'error';
+  } else if (syncErrorKind === SYNC_ERR_VAULT) {
+    text = '库不一致';
+    kind = 'error';
+  } else if (syncErrorKind === SYNC_ERR_NET) {
+    text = pending ? `离线 · 待同步 ${pending}` : '离线 · 本机已存';
+    kind = 'offline';
+  } else if (syncErrorKind === SYNC_ERR_HTTP) {
+    text = '同步失败';
+    kind = 'error';
+  } else if (!sessionToken) {
+    text = pending ? `离线可用 · 待同步 ${pending}` : '离线可用';
+    kind = 'offline';
+  } else if (pending) {
+    text = `待同步 ${pending}`;
+    kind = 'offline';
+  } else if (lastSyncAt) {
+    text = `已同步 ${formatClock(lastSyncAt)}`;
+    kind = 'ok';
+  } else {
+    text = '已连接 NAS';
+    kind = 'ok';
+  }
+  setBadge(text, kind);
+
+  if (els.syncLocalState) {
+    els.syncLocalState.textContent = cryptoKey
+      ? (offlineReady ? '本机加密可用（离线可读写）' : '本机加密可用')
+      : '未解锁';
+  }
+  if (els.syncPendingCount) els.syncPendingCount.textContent = cryptoKey ? `${pending} 条` : '—';
+  if (els.syncLastAt) els.syncLastAt.textContent = lastSyncAt ? formatClock(lastSyncAt) : '从未同步';
+  if (els.syncNowSettings) els.syncNowSettings.disabled = !cryptoKey || syncing;
+}
+
+// 兼容旧调用点：手动模式下更新状态胶囊。
+async function updateManualBadge() {
+  await updateSyncUI();
+}
+
+// 浏览器直连同源地址，没有「连哪台 NAS」的问题；只有安卓壳需要手填地址。
+function nativeServerApi() {
+  const api = window.NasNative;
+  return api && typeof api.getServer === 'function' && typeof api.setServer === 'function' ? api : null;
+}
+
+// 允许只写 IP、IP:端口；统一补 http:// 并去掉尾部斜杠。非法返回空串。
+function normalizeServerUrl(raw) {
+  let value = String(raw || '').trim();
+  if (!value) return '';
+  if (!/^https?:\/\//i.test(value)) value = 'http://' + value;
+  value = value.replace(/\/+$/, '');
+  return /^https?:\/\/[^\s/?#]+$/i.test(value) ? value : '';
+}
+
+function fillLockServerInput() {
+  if (!els.lockServerBlock) return;
+  const api = nativeServerApi();
+  els.lockServerBlock.hidden = !api;
+  if (!api) return;
+  if (!els.lockServerInput.value) {
+    try { els.lockServerInput.value = api.getServer() || ''; } catch (error) { /* 桥异常按空处理 */ }
+  }
+  setLockServerState('');
+}
+
+function setLockServerState(text, kind) {
+  if (!els.lockServerState) return;
+  els.lockServerState.textContent = text || '';
+  els.lockServerState.hidden = !text;
+  els.lockServerState.className = 'lock-server-state' + (kind ? ' ' + kind : '');
+}
+
+// 登录/同步前把登录页填的地址写进原生配置（SharedPreferences）。
+// 返回 false 表示格式不对，已提示，调用方应停下。
+function saveServerFromLockInput() {
+  const api = nativeServerApi();
+  if (!api || !els.lockServerInput) return true;
+  const raw = (els.lockServerInput.value || '').trim();
+  if (!raw) return true;          // 留空沿用上次保存的地址
+  const value = normalizeServerUrl(raw);
+  if (!value) {
+    showLockError('NAS 地址格式不对，例如 http://192.168.5.10:28080');
+    return false;
+  }
+  try { api.setServer(value); } catch (error) { console.warn('[NasNotes] setServer failed', error); }
+  els.lockServerInput.value = value;
+  updateServerLabel();
+  return true;
+}
+
+// 服务器地址只在壳里由原生层管理；浏览器直连时就是当前同源地址。
+function updateServerLabel() {
+  if (!els.syncServerAddr) return;
+  let label = location.origin;
+  try {
+    if (window.NasNative && typeof window.NasNative.getServer === 'function') {
+      label = window.NasNative.getServer() || '未设置（在登录页或设置里填入 NAS 地址）';
+    }
+  } catch (error) { /* 桥不可用时按同源显示 */ }
+  els.syncServerAddr.textContent = label;
+}
+
+function syncMsgShow(message, isError) {
+  if (!els.syncMsg) return;
+  els.syncMsg.textContent = message || '';
+  els.syncMsg.hidden = !message;
+  els.syncMsg.className = 'muted tiny' + (isError ? ' error-text' : '');
 }
 
 function setSaveState(text) {
@@ -454,13 +622,32 @@ function authHeaders() {
   return headers;
 }
 
-// 会话过期统一处理：清掉登录态，回锁屏（401 code=session 时调用）。
+// 会话过期：离线优先下绝不因此把用户踢回锁屏（会丢掉正在编辑的内容），
+// 只标记「需登录同步」，编辑与解密照常。只有本机没有离线库时才回锁屏。
 function handleSessionExpired() {
   sessionToken = '';
   localStorage.removeItem('nn-session');
+  syncErrorKind = SYNC_ERR_AUTH;
+  if (cryptoKey && offlineReady) {
+    updateSyncUI();
+    return;
+  }
   if (cryptoKey) lockApp();
   else showLockScreen(vaultMeta && vaultMeta.salt ? 'unlock' : 'init');
   showLockError('会话已过期，请重新登录');
+}
+
+function syncFail(kind, message) {
+  const error = new Error(message || kind);
+  error.kind = kind;
+  return error;
+}
+
+function isNetError(error) {
+  if (!error) return false;
+  if (error.kind === SYNC_ERR_NET) return true;
+  const msg = String(error.message || '');
+  return /Failed to fetch|NetworkError|连不上|timeout|timed out|ECONN|network|bridge unavailable/i.test(msg);
 }
 
 // ---------- WebCrypto ----------
@@ -514,6 +701,56 @@ async function unwrapVault(wrapKey, wrapped) {
   const value = await decryptJSON(wrapKey, parts[0], parts[1]);
   if (!value || typeof value.w !== 'string') throw new Error('bad wrapped payload');
   return b64ToBytes(value.w);
+}
+
+// ---------- 本机保险库（离线优先） ----------
+// 手机上必须能完全脱离 NAS 使用：vault（salt + 用密码包裹的 wkey）缓存在本机
+// IndexedDB 里，输入密码就能解出 wkey，不需要任何网络请求。
+// 「仅在本机使用」建的库带 local_only 标记，第一次连上服务器时再上传包裹层。
+async function readLocalVault() {
+  try {
+    const row = await idbGet(STORE_META, 'vault');
+    if (row && row.value) return JSON.parse(row.value);
+  } catch (error) {
+    console.warn('[NasNotes] read local vault failed', error);
+  }
+  return null;
+}
+
+async function saveLocalVault(meta) {
+  await idbPut(STORE_META, { key: 'vault', value: JSON.stringify(meta) });
+}
+
+// 只用本机缓存的包裹层解锁。密码不对时 AES-GCM 校验失败会抛错，由调用方决定下一步。
+async function unlockWithLocalVault(passphrase) {
+  const meta = await readLocalVault();
+  if (!meta || !meta.salt || !meta.wrapped) return null;
+  const wrapKey = await deriveKey(passphrase, meta.salt, meta.iterations || PBKDF2_ITERATIONS);
+  const wkey = await unwrapVault(wrapKey, meta.wrapped);
+  const key = await importWkey(wkey);
+  vaultMeta = meta;
+  wkeyBytes = wkey;
+  return key;
+}
+
+// 完全本机的加密库：本机生成 salt 与 wkey，密码只用于包裹。
+// 不写服务端，不需要登录；之后用户主动同步时再把包裹层推上去。
+async function createLocalVault(passphrase) {
+  const salt = bytesToB64(crypto.getRandomValues(new Uint8Array(16)));
+  const wrapKey = await deriveKey(passphrase, salt, PBKDF2_ITERATIONS);
+  const wkey = randomWkeyBytes();
+  const meta = {
+    salt,
+    wrapped: await wrapVault(wrapKey, wkey),
+    iterations: PBKDF2_ITERATIONS,
+    version: VAULT_VERSION,
+    local_only: true
+  };
+  await saveLocalVault(meta);
+  vaultMeta = meta;
+  wkeyBytes = wkey;
+  offlineReady = true;
+  return importWkey(wkey);
 }
 
 // ---------- 附件（明文仅在内存，随便签一起加密） ----------
@@ -990,21 +1227,27 @@ const DEFAULT_USERNAME = 'admin';
 function showLockScreen(mode) {
   initMode = mode === 'init';
   els.lockScreen.hidden = false;
-  els.lockTitle.textContent = '登录轻签';
+  els.lockTitle.textContent = IS_SHELL ? '轻签 · 本机便签' : '登录轻签';
   els.lockHint.textContent = initMode
-    ? '输入账户名和密码（默认 admin / admin）。首次登录后本机自动创建加密库。'
-    : '输入账户名和密码解锁。密码只在内存中用于解密，服务器上只存哈希和密文。';
+    ? '第一次使用：填好 NAS 地址，再输入 NAS 的账户和密码登录并同步；暂时不连 NAS 就用下面的「仅在本机使用」（默认 admin / admin）。'
+    : '输入密码解锁本机库即可离线读写；需要同步时点列表顶部的同步状态按钮。';
+  fillLockServerInput();
   els.confirmLabel.hidden = true;
   els.confirmInput.hidden = true;
   els.resetPanel.hidden = true;
   els.resetConfirmInput.value = '';
-  els.unlockBtn.textContent = '登录';
+  els.unlockBtn.textContent = initMode ? '登录并同步' : '解锁';
+  els.lockLocalBtn.hidden = !initMode;
+  if (els.lockOfflineNote) els.lockOfflineNote.hidden = !initMode;
   els.lockError.hidden = true;
-  if (!els.usernameInput.value) els.usernameInput.value = DEFAULT_USERNAME;
+  if (!els.usernameInput.value) {
+    els.usernameInput.value = accountName || localStorage.getItem('nn-account') || DEFAULT_USERNAME;
+  }
   els.passphraseInput.value = '';
   els.confirmInput.value = '';
-  setBadge(initMode ? '待初始化' : '未解锁');
-  setTimeout(() => (els.passphraseInput.value ? els.passphraseInput : els.usernameInput).focus(), 0);
+  offlineReady = Boolean(vaultMeta && vaultMeta.wrapped);
+  setBadge(initMode ? '本机无库' : '未解锁');
+  setTimeout(() => (els.passphraseInput.value ? els.passphraseInput : (initMode ? els.usernameInput : els.passphraseInput)).focus(), 0);
 }
 
 function showLockError(message) {
@@ -1030,6 +1273,7 @@ async function loginAccount(username, password) {
   sessionToken = data.token || '';
   accountName = data.username || username;
   localStorage.setItem('nn-session', JSON.stringify({ token: sessionToken, username: accountName }));
+  localStorage.setItem('nn-account', accountName);
   localStorage.removeItem('nn-token');   // 旧版令牌残留清理
   return data;
 }
@@ -1044,101 +1288,251 @@ async function fetchMeta() {
 
   const meta = await response.json();
   if (meta.initialized) {
-    vaultMeta = {
-      salt: meta.salt,
-      wrapped: meta.wrapped,
-      iterations: meta.iterations,
-      version: meta.version,
-      legacy: Boolean(meta.verifier && !meta.wrapped)
-    };
-    if (vaultMeta.legacy) vaultMeta.verifier = meta.verifier;
-    await idbPut(STORE_META, { key: 'vault', value: JSON.stringify(vaultMeta) });
+    // 本机若是「仅本机使用」建的库、且服务器是另一套密钥，绝不悄悄覆盖本机包裹层，
+    // 否则本机笔记会立刻解不开。交由调用方提示用户处理。
+    const localOnly = vaultMeta && vaultMeta.local_only;
+    const mismatch = localOnly && vaultMeta.salt && meta.salt && vaultMeta.salt !== meta.salt;
+    if (!mismatch) {
+      vaultMeta = {
+        salt: meta.salt,
+        wrapped: meta.wrapped,
+        iterations: meta.iterations,
+        version: meta.version,
+        legacy: Boolean(meta.verifier && !meta.wrapped)
+      };
+      if (vaultMeta.legacy) vaultMeta.verifier = meta.verifier;
+      await saveLocalVault(vaultMeta);
+    }
   }
   return meta;
+}
+
+// 解锁后的公共收尾：解密本机密文、恢复分类、渲染，并决定要不要联网。
+async function afterUnlock(key) {
+  cryptoKey = key;
+  offlineReady = true;
+  syncErrorKind = '';
+  els.lockScreen.hidden = true;
+  els.passphraseInput.value = '';
+  els.confirmInput.value = '';
+  await rebuildPlainCache();
+  await loadFolderRegistry();
+  setSaveState('已解锁');
+  renderList();
+  renderEditor();
+  await updateSyncUI();
+  // 只有「自动」模式才会在解锁瞬间联网；手动模式（安卓壳默认）绝不主动请求，
+  // 否则就是用户说的「在线版便签」了。
+  if (syncMode === 'auto' && sessionToken) {
+    startAutoSync();
+    try { await sync(); } catch (error) { /* 状态胶囊已展示失败原因 */ }
+  } else {
+    stopAutoSync();
+  }
+}
+
+function countLocalNotes() {
+  let count = 0;
+  for (const note of notesCache.values()) if (!note.deleted) count += 1;
+  return count;
+}
+
+// 改用服务器库前清空本机这些密的便签（账户不动）。用于确认过「放弃本机离线库」之后。
+async function clearLocalNotes() {
+  notesCache.clear();
+  plainCache.clear();
+  for (const store of [STORE_NOTES, STORE_OUT]) {
+    try {
+      const rows = await idbGetAll(store);
+      for (const row of rows) await idbDelete(store, row.id);
+    } catch (error) { /* 清不掉就继续，下面会覆盖写入 */ }
+  }
+  currentId = null;
+  renderList();
+  renderEditor();
+}
+
+function logoutQuiet() {
+  sessionToken = '';
+  localStorage.removeItem('nn-session');
+}
+
+// 联网解锁：登录 → 对齐服务器加密库 → 用密码解出 wkey。
+// 返回 CryptoKey；返回 null 表示已给出提示、应停在锁屏。
+async function unlockOnline(username, passphrase) {
+  const session = await loginAccount(username, passphrase);
+  if (!session) {
+    showLockError('账户或密码不正确');
+    return null;
+  }
+  localStorage.setItem('nn-account', accountName);
+
+  const server = await readServerVault();
+
+  // 旧版库（口令密钥直接加密笔记、没有 wkey 包裹）：沿用原来的静默迁移路径
+  if (server.initialized && !server.wrapped && server.verifier) {
+    vaultMeta = {
+      salt: server.salt, wrapped: '', iterations: server.iterations,
+      version: server.version, legacy: true, verifier: server.verifier
+    };
+    await saveLocalVault(vaultMeta);
+    const legacyKey = await deriveKey(passphrase, vaultMeta.salt, vaultMeta.iterations);
+    if (!(await checkLegacyVerifier(legacyKey, vaultMeta.verifier))) {
+      showLockError('旧加密库需要用升级前的加密口令迁移；可点「忘记密码？」清空重建');
+      return null;
+    }
+    return migrateLegacyVault(legacyKey, passphrase);
+  }
+
+  if (server.initialized && server.wrapped) {
+    const sameVault = Boolean(vaultMeta && vaultMeta.salt && vaultMeta.salt === server.salt);
+    const localCount = countLocalNotes();
+    if (!sameVault && vaultMeta && vaultMeta.local_only && localCount > 0) {
+      const adopt = await askConfirm(
+        '服务器上是另一套加密库',
+        `本机有一个独立的离线库（${localCount} 条便签），它与服务器的加密库密钥不同，无法自动合并。` +
+        `改用服务器库会清空本机这 ${localCount} 条便签，建议先到「设置 → 数据与备份」导出备份。要改用服务器库吗？`,
+        '改用服务器库'
+      );
+      if (!adopt) {
+        logoutQuiet();
+        showLockError('已保持本机离线库不变。要同步请先导出本机备份，再改用服务器库。');
+        return null;
+      }
+      await clearLocalNotes();
+    }
+    vaultMeta = {
+      salt: server.salt,
+      wrapped: server.wrapped,
+      iterations: server.iterations || PBKDF2_ITERATIONS,
+      version: server.version || VAULT_VERSION
+    };
+    await saveLocalVault(vaultMeta);
+    const wrapKey = await deriveKey(passphrase, vaultMeta.salt, vaultMeta.iterations);
+    let wkey;
+    try {
+      wkey = await unwrapVault(wrapKey, vaultMeta.wrapped);
+    } catch (error) {
+      showLockError('这个密码解不开服务器上的加密库（可能是在别的设备改过密码）。可在锁屏页用「清空加密库重新开始」重建');
+      return null;
+    }
+    wkeyBytes = wkey;
+    return importWkey(wkey);
+  }
+
+  // 服务器还没有加密库：本机若已有库（例如先在手机离线用了一阵）就把它推上去，
+  // 这样手机上的离线笔记不会因为连了一次 NAS 就丢掉。
+  if (vaultMeta && vaultMeta.salt && vaultMeta.wrapped) {
+    const resp = await fetch('/api/meta', {
+      method: 'PUT', headers: authHeaders(),
+      body: JSON.stringify({
+        salt: vaultMeta.salt, wrapped: vaultMeta.wrapped,
+        iterations: vaultMeta.iterations, version: vaultMeta.version, replace: true
+      })
+    });
+    if (resp.status === 409) {
+      await fetchMeta();
+    } else if (!resp.ok) {
+      throw new Error('上传本机加密库失败: HTTP ' + resp.status);
+    } else {
+      vaultMeta = Object.assign({}, vaultMeta, { local_only: false });
+      await saveLocalVault(vaultMeta);
+    }
+    const wrapKey = await deriveKey(passphrase, vaultMeta.salt, vaultMeta.iterations);
+    let wkey;
+    try {
+      wkey = await unwrapVault(wrapKey, vaultMeta.wrapped);
+    } catch (error) {
+      showLockError('本机离线库的密码与刚输入的不一致：请用创建本机库时的那个密码');
+      return null;
+    }
+    wkeyBytes = wkey;
+    return importWkey(wkey);
+  }
+
+  // 两边都没有库：用登录密码新建
+  const salt = bytesToB64(crypto.getRandomValues(new Uint8Array(16)));
+  const wrapKey = await deriveKey(passphrase, salt, PBKDF2_ITERATIONS);
+  const newWkey = randomWkeyBytes();
+  const meta = {
+    salt,
+    wrapped: await wrapVault(wrapKey, newWkey),
+    iterations: PBKDF2_ITERATIONS,
+    version: VAULT_VERSION
+  };
+  const response = await fetch('/api/meta', {
+    method: 'PUT', headers: authHeaders(), body: JSON.stringify(meta)
+  });
+  if (response.status === 409) {
+    await fetchMeta();   // 其他设备刚建库，改用它的包裹层
+    if (!vaultMeta || !vaultMeta.wrapped) return null;
+    const remoteWrap = await deriveKey(passphrase, vaultMeta.salt, vaultMeta.iterations);
+    try {
+      wkeyBytes = await unwrapVault(remoteWrap, vaultMeta.wrapped);
+    } catch (error) {
+      showLockError('其他设备刚创建的加密库与本密码不匹配，请用那台设备的密码登录');
+      return null;
+    }
+    return importWkey(wkeyBytes);
+  }
+  if (!response.ok) throw new Error('初始化加密库失败: HTTP ' + response.status);
+  vaultMeta = meta;
+  wkeyBytes = newWkey;
+  await saveLocalVault(vaultMeta);
+  return importWkey(newWkey);
 }
 
 async function handleUnlock() {
   const username = (els.usernameInput.value || '').trim() || DEFAULT_USERNAME;
   const passphrase = els.passphraseInput.value;
-  if (!passphrase) return showLockError('请输入登录口令');
   els.lockError.hidden = true;
+  setLockServerState('');
+  // 先把登录页填的 NAS 地址写进原生配置，否则登录请求会打到上次的旧地址。
+  if (!saveServerFromLockInput()) return;
+  if (!passphrase) return showLockError('请输入密码');
   els.unlockBtn.disabled = true;
 
   try {
-    const session = await loginAccount(username, passphrase);
-    if (!session) return showLockError('账户或口令不正确');
+    // 1) 本机优先：不发任何网络请求，断网、NAS 关机都能解锁。
+    if (vaultMeta && vaultMeta.wrapped) {
+      let localKey = null;
+      try {
+        localKey = await unlockWithLocalVault(passphrase);
+      } catch (error) {
+        localKey = null;   // 密码不对 → 再用服务器验证（可能密码在别的设备改过）
+      }
+      if (localKey) {
+        accountName = accountName || localStorage.getItem('nn-account') || DEFAULT_USERNAME;
+        await afterUnlock(localKey);
+        return;
+      }
+      try {
+        const key = await unlockOnline(username, passphrase);
+        if (key) await afterUnlock(key);
+      } catch (error) {
+        if (isNetError(error)) {
+          showLockError('本机密码不正确，且连不上 NAS 无法在线验证。');
+        } else {
+          throw error;
+        }
+      }
+      return;
+    }
 
-    await fetchMeta();
-
+    // 2) 本机还没有库：必须联网登录一次（创建或接管服务器库）
     let key = null;
-    if (!vaultMeta || !vaultMeta.salt) {
-      // 服务端还没有加密库：本机生成随机 wkey，用登录口令派生密钥包裹。
-      const salt = bytesToB64(crypto.getRandomValues(new Uint8Array(16)));
-      const wrapKey = await deriveKey(passphrase, salt, PBKDF2_ITERATIONS);
-      const newWkey = randomWkeyBytes();
-      const meta = {
-        salt,
-        wrapped: await wrapVault(wrapKey, newWkey),
-        iterations: PBKDF2_ITERATIONS,
-        version: VAULT_VERSION
-      };
-      const response = await fetch('/api/meta', {
-        method: 'PUT', headers: authHeaders(), body: JSON.stringify(meta)
-      });
-      if (response.status === 409) {
-        await fetchMeta();   // 其他设备刚建库，改用它的包裹层
-      } else if (!response.ok) {
-        throw new Error('初始化加密库失败: HTTP ' + response.status);
-      } else {
-        vaultMeta = meta;
-        wkeyBytes = newWkey;
-        key = await importWkey(newWkey);
+    try {
+      key = await unlockOnline(username, passphrase);
+    } catch (error) {
+      if (isNetError(error)) {
+        els.lockLocalBtn.hidden = false;
+        if (els.lockOfflineNote) els.lockOfflineNote.hidden = false;
+        showLockError('连不上 NAS，无法登录。若想先离线使用，请点下方「仅在本机使用」用当前密码创建本机加密库。');
+        return;
       }
-      if (vaultMeta && vaultMeta.salt) {
-        await idbPut(STORE_META, { key: 'vault', value: JSON.stringify(vaultMeta) });
-      }
+      throw error;
     }
-
-    if (!key) {
-      if (vaultMeta.legacy) {
-        // 旧版加密库（口令派生密钥直接加密笔记，无 wkey 包裹）：
-        // 只用登录密码静默校验/迁移，绝不弹 prompt（安卓 WebView
-        // 默认不支持 window.prompt，会把登录卡死）。
-        const legacyKey = await deriveKey(passphrase, vaultMeta.salt, vaultMeta.iterations);
-        if (!(await checkLegacyVerifier(legacyKey, vaultMeta.verifier))) {
-          return showLockError('旧加密库需要用升级前的加密口令迁移；请在登录页用「清空加密库重新开始」重建');
-        }
-        // 迁移后统一用当前登录密码包裹（新旧口令就此并轨）
-        key = await migrateLegacyVault(legacyKey, passphrase);
-      } else {
-        const wrapKey = await deriveKey(passphrase, vaultMeta.salt, vaultMeta.iterations);
-        let unlockedWkey;
-        try {
-          unlockedWkey = await unwrapVault(wrapKey, vaultMeta.wrapped);
-        } catch (error) {
-          return showLockError('登录口令与加密库口令不一致，无法解密。可在锁屏页“清空加密库重新开始”（会丢失数据）');
-        }
-        wkeyBytes = unlockedWkey;   // 供改口令时重新包裹（仅内存）
-        key = await importWkey(wkeyBytes);
-      }
-    }
-    cryptoKey = key;
-
-    els.lockScreen.hidden = true;
-    els.passphraseInput.value = '';
-    els.confirmInput.value = '';
-    await rebuildPlainCache();
-    await loadFolderRegistry();
-    setSaveState('已解锁');
-    renderList();
-    renderEditor();
-    if (syncMode === 'auto') {
-      startAutoSync();
-      await sync();
-    } else {
-      stopAutoSync();
-      await updateManualBadge();
-    }
+    if (key) await afterUnlock(key);
   } catch (error) {
     console.warn('[NasNotes] unlock failed', error);
     showLockError('操作失败：' + (error && error.message ? error.message : '未知错误'));
@@ -1238,12 +1632,9 @@ async function lockApp() {
   stopRecording();
   stopAutoSync();
   clearTimeout(syncTimer);
-  if (sessionToken) {
-    // 通知服务端撤销当前会话（失败无所谓，本地令牌随即清掉）
-    fetch('/api/logout', { method: 'POST', headers: authHeaders() }).catch(() => {});
-    sessionToken = '';
-    localStorage.removeItem('nn-session');
-  }
+  // 注意：这里不再撤销服务端会话。「锁定」只清内存里的明文与密钥，
+  // 会话令牌本来就存在本机 localStorage；保留它才能做到「解锁后直接同步」，
+  // 也避免离线时发一个必定失败的 /api/logout 请求。
   cryptoKey = null;
   wkeyBytes = null;
   plainCache.clear();
@@ -1282,7 +1673,7 @@ async function queueUpsert(note) {
     device: deviceId
   });
   notesCache.set(updated.id, updated);
-  setSaveState('待同步');
+  setSaveState('已存本机');
 
   await idbPut(STORE_NOTES, updated);
   await idbPut(STORE_OUT, {
@@ -1321,31 +1712,74 @@ async function queueDelete(noteId) {
   updateManualBadge();
 }
 
-// ---------- 同步 ----------
-async function sync() {
-  if (syncing || !cryptoKey) return;
-  if (!navigator.onLine) {
-    setBadge('离线', 'offline');
-    return;
+// ---------- 同步（只在用户主动点，或 Web 端自动模式时发生） ----------
+// 读服务器 vault，但不写本机缓存：先确认两边是同一套加密库，再谈同步。
+async function readServerVault() {
+  let response;
+  try {
+    response = await fetch('/api/meta', { headers: authHeaders() });
+  } catch (error) {
+    throw syncFail(SYNC_ERR_NET, '连不上 NAS 服务器');
   }
+  if (response.status === 401) throw syncFail(SYNC_ERR_AUTH, '服务器登录已失效');
+  if (!response.ok) throw syncFail(SYNC_ERR_HTTP, '读取加密库信息失败: HTTP ' + response.status);
+  return response.json();
+}
+
+// 「仅本机使用」的库第一次连上服务器时把包裹层推上去，之后两端就是同一套密钥。
+async function uploadLocalVault() {
+  const resp = await fetch('/api/meta', {
+    method: 'PUT', headers: authHeaders(),
+    body: JSON.stringify({
+      salt: vaultMeta.salt, wrapped: vaultMeta.wrapped,
+      iterations: vaultMeta.iterations, version: vaultMeta.version,
+      replace: Boolean(vaultMeta.local_only)
+    })
+  });
+  if (resp.status === 401) throw syncFail(SYNC_ERR_AUTH, '服务器登录已失效');
+  if (resp.status === 409) throw syncFail(SYNC_ERR_VAULT, '服务器上已有加密库');
+  if (!resp.ok) throw syncFail(SYNC_ERR_HTTP, '上传加密库失败: HTTP ' + resp.status);
+  vaultMeta = Object.assign({}, vaultMeta, { local_only: false });
+  await saveLocalVault(vaultMeta);
+}
+
+async function sync() {
+  if (syncing || !cryptoKey) return false;
+  if (!sessionToken) throw syncFail(SYNC_ERR_AUTH, '需要登录 NAS 才能同步');
 
   syncing = true;
+  syncErrorKind = '';
   setBadge('同步中…');
+  updateSyncUI();
   try {
+    // 0) 库一致性。服务器还没有库就上传本机库；服务器是另一套库就停下，
+    //    绝不把本机密文推进去（推过去别的设备也解不开）。
+    const meta = await readServerVault();
+    if (!meta.initialized) {
+      await uploadLocalVault();
+    } else if (vaultMeta && meta.salt && vaultMeta.salt !== meta.salt) {
+      throw syncFail(SYNC_ERR_VAULT, '本机与服务器的加密库不是同一套密钥');
+    } else if (vaultMeta && vaultMeta.local_only) {
+      vaultMeta = Object.assign({}, vaultMeta, { local_only: false });
+      await saveLocalVault(vaultMeta);
+    }
+
     const outbox = await idbGetAll(STORE_OUT);
     outbox.sort((a, b) => a.queued_at - b.queued_at);
 
     for (const op of outbox) {
-      const response = await fetch('/api/notes/' + encodeURIComponent(op.id), {
-        method: op.method,
-        headers: authHeaders(),
-        body: JSON.stringify(op.payload || {})
-      });
-      if (response.status === 401) {
-        handleSessionExpired();
-        return;
+      let response;
+      try {
+        response = await fetch('/api/notes/' + encodeURIComponent(op.id), {
+          method: op.method,
+          headers: authHeaders(),
+          body: JSON.stringify(op.payload || {})
+        });
+      } catch (error) {
+        throw syncFail(SYNC_ERR_NET, '推送时连不上 NAS');
       }
-      if (!response.ok) throw new Error('推送失败: HTTP ' + response.status);
+      if (response.status === 401) throw syncFail(SYNC_ERR_AUTH, '服务器登录已失效');
+      if (!response.ok) throw syncFail(SYNC_ERR_HTTP, '推送失败: HTTP ' + response.status);
 
       const result = await response.json();
       const serverNote = result.note;
@@ -1367,12 +1801,14 @@ async function sync() {
       if (result.applied === false) toast('检测到更新冲突，已采用服务端版本');
     }
 
-    const response = await fetch('/api/notes', { headers: authHeaders() });
-    if (response.status === 401) {
-      handleSessionExpired();
-      return;
+    let response;
+    try {
+      response = await fetch('/api/notes', { headers: authHeaders() });
+    } catch (error) {
+      throw syncFail(SYNC_ERR_NET, '拉取时连不上 NAS');
     }
-    if (!response.ok) throw new Error('拉取失败: HTTP ' + response.status);
+    if (response.status === 401) throw syncFail(SYNC_ERR_AUTH, '服务器登录已失效');
+    if (!response.ok) throw syncFail(SYNC_ERR_HTTP, '拉取失败: HTTP ' + response.status);
 
     const data = await response.json();
     const pendingIds = new Set((await idbGetAll(STORE_OUT)).map((item) => item.id));
@@ -1397,22 +1833,97 @@ async function sync() {
       }
     }
 
+    lastSyncAt = new Date().toISOString();
+    localStorage.setItem('nn-last-sync', lastSyncAt);
+    syncErrorKind = '';
     setBadge('已同步', 'ok');
-    setSaveState('已保存');
+    setSaveState('已同步');
     renderList();
     if (currentId) updateEditorMeta();
+    return true;
   } catch (error) {
+    syncErrorKind = error.kind || SYNC_ERR_HTTP;
     console.warn('[NasNotes] sync failed', error);
-    setBadge(navigator.onLine ? '同步失败' : '离线', navigator.onLine ? 'error' : 'offline');
+    setBadge(syncErrorKind === SYNC_ERR_NET ? '离线 · 本机已存' : '同步失败',
+      syncErrorKind === SYNC_ERR_NET ? 'offline' : 'error');
+    throw error;
   } finally {
     syncing = false;
+    updateSyncUI();
   }
 }
 
-function triggerSync(delay = 300) {
-  if (syncMode !== 'auto' || !cryptoKey) return;
+// 手动同步：先把当前编辑落盘，再确保有服务器会话，最后跑一次双向同步。
+async function doManualSync() {
+  if (!cryptoKey) {
+    toast('请先解锁');
+    return;
+  }
+  if (syncing) return;
   clearTimeout(syncTimer);
-  syncTimer = setTimeout(sync, delay);
+  flushRich();
+  if (saveTimer) {
+    clearTimeout(saveTimer);
+    saveTimer = null;
+    const note = notesCache.get(currentId);
+    if (note) await queueUpsert(note);
+  }
+  if (!sessionToken) {
+    const connected = await openSyncLogin();
+    if (!connected) return;
+  }
+  try {
+    await sync();
+    toast('已与 NAS 同步');
+    syncMsgShow('同步完成：' + formatClock(lastSyncAt), false);
+  } catch (error) {
+    // 会话失效时清掉令牌：用户再点一次同步就会走「连接 NAS」输入密码，而不是反复失败。
+    if (error.kind === SYNC_ERR_AUTH) logoutQuiet();
+    const message = error.kind === SYNC_ERR_AUTH
+      ? '登录已失效，请重新连接 NAS（再点一次即可输入密码）'
+      : error.kind === SYNC_ERR_VAULT
+        ? '本机与服务器的加密库不一致，已停止同步（不会覆盖任何一边）'
+        : error.kind === SYNC_ERR_NET
+          ? '连不上 NAS，本机修改已保存，稍后可再同步'
+          : '同步失败：' + (error.message || '未知错误');
+    toast(message);
+    syncMsgShow(message, true);
+    updateSyncUI();
+  }
+}
+
+// 同步前的小登录框（离线解锁后没有会话令牌时用）。
+function openSyncLogin() {
+  return new Promise((resolve) => {
+    syncLoginResolve = (value) => {
+      syncLoginResolve = null;
+      resolve(Boolean(value));
+    };
+    els.syncUser.value = accountName || localStorage.getItem('nn-account') || DEFAULT_USERNAME;
+    els.syncPass.value = '';
+    els.syncLoginError.hidden = true;
+    if (els.syncLoginHint) {
+      els.syncLoginHint.textContent = '本机修改已加密保存，不会丢。同步只是把本机与 NAS 对齐，需要 NAS 上的账户密码。';
+    }
+    if (!openDialog(els.syncLoginDialog)) {
+      const done = syncLoginResolve;
+      syncLoginResolve = null;
+      done(false);
+      return;
+    }
+    setTimeout(() => els.syncPass.focus(), 30);
+  });
+}
+
+function closeSyncLogin(ok) {
+  closeDialog(els.syncLoginDialog);
+  if (syncLoginResolve) syncLoginResolve(ok);
+}
+
+function triggerSync(delay = 300) {
+  if (syncMode !== 'auto' || !cryptoKey || !sessionToken) return;
+  clearTimeout(syncTimer);
+  syncTimer = setTimeout(() => { sync().catch(() => {}); }, delay);
 }
 
 // ---------- 渲染（明文只来自内存） ----------
@@ -1898,6 +2409,7 @@ function exportBackup() {
   toast('已导出加密备份（不含明文）');
 }
 
+// 导入只写本机（离线可用），条目进 outbox，等用户手动同步时再推给 NAS。
 async function importBackup(file) {
   let backup;
   try {
@@ -1910,6 +2422,10 @@ async function importBackup(file) {
     toast('备份格式不匹配');
     return;
   }
+  if (!cryptoKey) {
+    toast('请先解锁再导入');
+    return;
+  }
 
   try {
     const sample = backup.notes.find((note) => note && !note.deleted && note.payload);
@@ -1918,23 +2434,23 @@ async function importBackup(file) {
       if (!plain || typeof plain.title !== 'string') throw new Error('口令不匹配');
     }
 
+    const incoming = backup.meta || {};
+    const sameVault = Boolean(vaultMeta && vaultMeta.salt && incoming.salt && vaultMeta.salt === incoming.salt);
+    if (vaultMeta && vaultMeta.salt && !sameVault) {
+      throw new Error('备份来自另一套加密库（密钥不同），不能直接并入本机现有的库');
+    }
     if (!vaultMeta || !vaultMeta.salt) {
-      if (!backup.meta || !backup.meta.salt || !backup.meta.wrapped) throw new Error('备份缺少加密参数');
-      const meta = {
-        salt: backup.meta.salt,
-        wrapped: backup.meta.wrapped,
-        iterations: backup.meta.iterations || PBKDF2_ITERATIONS,
-        version: backup.meta.version || VAULT_VERSION
+      if (!incoming.salt || !incoming.wrapped) throw new Error('备份缺少加密参数');
+      vaultMeta = {
+        salt: incoming.salt,
+        wrapped: incoming.wrapped,
+        iterations: incoming.iterations || PBKDF2_ITERATIONS,
+        version: incoming.version || VAULT_VERSION
       };
-      const response = await fetch('/api/meta', {
-        method: 'PUT', headers: authHeaders(), body: JSON.stringify(meta)
-      });
-      if (response.status === 401) { handleSessionExpired(); throw new Error('会话已过期'); }
-      if (!response.ok && response.status !== 409) throw new Error('写入加密参数失败');
-      vaultMeta = meta;
-      await idbPut(STORE_META, { key: 'vault', value: JSON.stringify(meta) });
+      await saveLocalVault(vaultMeta);
     }
 
+    const stamp = new Date().toISOString();
     let imported = 0;
     let skipped = 0;
     for (const note of backup.notes) {
@@ -1942,27 +2458,34 @@ async function importBackup(file) {
         skipped += 1;
         continue;
       }
-      const response = await fetch('/api/notes/' + encodeURIComponent(note.id), {
+      const record = {
+        id: note.id,
+        iv: note.iv || '',
+        payload: note.payload || '',
+        created_at: note.created_at || note.updated_at || stamp,
+        updated_at: note.updated_at || stamp,
+        deleted: Boolean(note.deleted),
+        device: note.device || 'import'
+      };
+      notesCache.set(record.id, record);
+      await idbPut(STORE_NOTES, record);
+      await idbPut(STORE_OUT, {
+        id: record.id,
         method: 'PUT',
-        headers: authHeaders(),
-        body: JSON.stringify({
-          iv: note.iv || '',
-          payload: note.payload || '',
-          updated_at: note.updated_at || new Date().toISOString(),
-          device: note.device || 'import',
-          deleted: Boolean(note.deleted)
-        })
+        payload: {
+          iv: record.iv, payload: record.payload,
+          updated_at: record.updated_at, device: deviceId
+        },
+        queued_at: Date.now()
       });
-      if (response.status === 401) { handleSessionExpired(); throw new Error('会话已过期'); }
-      if (response.ok) imported += 1;
-      else skipped += 1;
+      imported += 1;
     }
 
-    await sync();
     await rebuildPlainCache();
     renderList();
     renderEditor();
-    toast(`导入完成：${imported} 条，跳过 ${skipped} 条`);
+    await updateSyncUI();
+    toast(`已导入本机 ${imported} 条（跳过 ${skipped}），点顶部状态按钮即可同步到 NAS`);
   } catch (error) {
     console.warn('[NasNotes] import failed', error);
     toast('导入失败：' + (error && error.message ? error.message : '未知错误'));
@@ -1976,6 +2499,98 @@ els.passphraseInput.addEventListener('keydown', (event) => {
 });
 els.confirmInput.addEventListener('keydown', (event) => {
   if (event.key === 'Enter') handleUnlock();
+});
+
+// 登录页「测试」按钮：保存地址并真正打一次 /api/health，避免填错地址后
+// 一路登录失败却看不出是网络问题。
+if (els.lockServerTestBtn) {
+  els.lockServerTestBtn.addEventListener('click', async () => {
+    els.lockError.hidden = true;
+    if (!saveServerFromLockInput()) return;
+    const api = nativeServerApi();
+    const target = api ? (api.getServer() || '') : location.origin;
+    if (!target) {
+      setLockServerState('先填 NAS 地址，例如 192.168.5.10:28080', 'bad');
+      return;
+    }
+    els.lockServerTestBtn.disabled = true;
+    setLockServerState('正在连接 ' + target + ' …');
+    try {
+      const response = await fetch('/api/health');
+      if (response.ok) setLockServerState('连接正常 ✓ ' + target, 'ok');
+      else setLockServerState('能连通，但返回 HTTP ' + response.status + '（检查地址或服务状态）', 'bad');
+    } catch (error) {
+      setLockServerState('连不上 ' + target + '：检查地址、端口与 NAS 是否开机', 'bad');
+    } finally {
+      els.lockServerTestBtn.disabled = false;
+    }
+  });
+}
+
+// 「仅在本机使用」：不登录、不联网，用当前密码在本机建一个加密库。
+// 这是「离线独立 App」的第一入口，之后随时可以在同步里连 NAS。
+els.lockLocalBtn.addEventListener('click', async () => {
+  const passphrase = els.passphraseInput.value;
+  if (passphrase.length < 8) {
+    return showLockError('本机密码至少 8 位（忘记无法恢复，建议记到密码管理器）');
+  }
+  els.lockError.hidden = true;
+  els.lockLocalBtn.disabled = true;
+  try {
+    const key = await createLocalVault(passphrase);
+    accountName = '本机';
+    localStorage.setItem('nn-account', accountName);
+    els.usernameInput.value = DEFAULT_USERNAME;
+    await afterUnlock(key);
+    toast('已创建本机加密库：不联网也能读写，需要同步时点顶部的状态按钮');
+  } catch (error) {
+    console.warn('[NasNotes] create local vault failed', error);
+    showLockError('创建本机加密库失败：' + (error && error.message ? error.message : '未知错误'));
+  } finally {
+    els.lockLocalBtn.disabled = false;
+  }
+});
+
+// 顶部状态胶囊 = 手动同步入口（手机上侧栏是隐藏的，这是唯一显眼的位置）
+els.syncBadge.addEventListener('click', doManualSync);
+els.syncNowSettings.addEventListener('click', doManualSync);
+els.syncLoginCancel.addEventListener('click', () => closeSyncLogin(false));
+els.syncLoginDialog.addEventListener('close', () => {
+  if (syncLoginResolve) syncLoginResolve(false);
+});
+els.syncPass.addEventListener('keydown', (event) => {
+  if (event.key === 'Enter') els.syncLoginOk.click();
+});
+els.syncLoginOk.addEventListener('click', async () => {
+  const user = (els.syncUser.value || '').trim() || DEFAULT_USERNAME;
+  const pass = els.syncPass.value;
+  const fail = (message) => {
+    els.syncLoginError.textContent = message;
+    els.syncLoginError.hidden = false;
+  };
+  els.syncLoginError.hidden = true;
+  if (!pass) return fail('请输入 NAS 的账户密码');
+  els.syncLoginOk.disabled = true;
+  try {
+    const session = await loginAccount(user, pass);
+    if (!session) return fail('账户或密码不正确');
+    localStorage.setItem('nn-account', accountName);
+    const meta = await readServerVault();
+    if (meta.initialized && vaultMeta && meta.salt && vaultMeta.salt && meta.salt !== vaultMeta.salt) {
+      logoutQuiet();
+      return fail('服务器上的是另一套加密库，与本机密钥不同，无法同步。');
+    }
+    els.syncPass.value = '';
+    syncErrorKind = '';
+    if (syncMode === 'auto') startAutoSync();
+    closeSyncLogin(true);
+  } catch (error) {
+    fail(isNetError(error)
+      ? '连不上 NAS，请检查网络与设置里的服务器地址'
+      : ('连接失败：' + (error && error.message ? error.message : '未知错误')));
+  } finally {
+    els.syncLoginOk.disabled = false;
+  }
 });
 
 // 忘记密码逃生口：先展开明确的危险操作区，必须手动输入「清空数据」。
@@ -2386,7 +3001,7 @@ function syncFolderDialogNew() {
 els.folderDialogSelect.addEventListener('change', syncFolderDialogNew);
 
 els.searchInput.addEventListener('input', renderList);
-els.syncBtn.addEventListener('click', () => { clearTimeout(syncTimer); sync(); });
+els.syncBtn.addEventListener('click', () => { clearTimeout(syncTimer); doManualSync(); });
 
 // 分类筛选：左栏按钮（宽屏）与列表上方下拉（窄屏）共用同一状态。
 els.folderRail.addEventListener('click', (event) => {
@@ -3128,15 +3743,24 @@ document.addEventListener('visibilitychange', () => {
 
 window.addEventListener('online', () => {
   if (!cryptoKey) return;
+  // 手动模式绝不因为「网恢复了」就自动上传：用户选择离线独立使用，
+  // 联网与否都不该触发网络行为，只更新状态提示。
   if (syncMode === 'manual') {
-    updateManualBadge();
+    if (!sessionToken) syncMsgShow('已联网。点状态胶囊即可与 NAS 同步。', false);
+    updateSyncUI();
     return;
   }
   setBadge('联网中');
   triggerSync(200);
 });
 window.addEventListener('offline', () => {
-  if (cryptoKey) setBadge('离线', 'offline');
+  if (!cryptoKey) return;
+  if (syncMode === 'manual') {
+    syncMsgShow('当前无网络，本机读写不受影响。', false);
+    updateSyncUI();
+    return;
+  }
+  setBadge('离线', 'offline');
 });
 
 const SETTINGS_PANEL_TITLES = {
@@ -3178,11 +3802,20 @@ els.settingsBtn.addEventListener('click', async () => {
   els.acctError.hidden = true;
   els.saveAccount.disabled = !sessionToken;
   openDialog(els.settingsDialog);
+  updateSyncUI();
+  updateServerLabel();
+  // 壳内「设置 → 同步」里的地址行由桥接注入，打开设置时按原生配置回填，
+  // 免得在登录页改过地址后这里还显示旧值。
+  const injectedServerInput = document.getElementById('nn-server-input');
+  const nativeApi = nativeServerApi();
+  if (injectedServerInput && nativeApi) {
+    try { injectedServerInput.value = nativeApi.getServer() || ''; } catch (error) { /* 忽略桥异常 */ }
+  }
   if (sessionToken) {
     // 服务端为准刷新账户名（改名后其他设备同步显示）
     try {
       const resp = await fetch('/api/account', { headers: authHeaders() });
-      if (resp.status === 401) { handleSessionExpired(); return; }
+      if (resp.status === 401) { handleSessionExpired(); updateSyncUI(); return; }
       if (resp.ok) {
         const data = await resp.json();
         if (data.username) {
@@ -3256,7 +3889,9 @@ els.importFile.addEventListener('change', () => {
     }
   } catch (error) { /* 旧数据或损坏，按未登录处理 */ }
   localStorage.removeItem('nn-token');   // 旧版令牌残留清理
-  syncMode = localStorage.getItem('nn-sync-mode') === 'manual' ? 'manual' : 'auto';
+  // 安卓壳默认「手动」：启动、编辑、联网都不联网，只有用户点同步才连 NAS。
+  // 浏览器直连 NAS 时保持自动（那本来就是在线环境）。
+  syncMode = (localStorage.getItem('nn-sync-mode') || DEFAULT_SYNC_MODE) === 'manual' ? 'manual' : 'auto';
   syncIntervalSec = normalizeSyncInterval(localStorage.getItem('nn-sync-interval') || SYNC_INTERVAL_DEFAULT);
   imageQuality = localStorage.getItem('nn-image-quality') || 'balanced';
   audioQuality = localStorage.getItem('nn-audio-quality') || 'balanced';
@@ -3298,13 +3933,14 @@ els.importFile.addEventListener('change', () => {
     });
   }
 
-  if (sessionToken) {
+  // 启动阶段不主动联网：本机有库就直接进「输入密码解锁」，没有库才提示去连 NAS。
+  // 只有 Web 端的自动模式才在这里刷新会话与服务器包裹层。
+  if (sessionToken && syncMode === 'auto') {
     try {
       await fetchMeta();
     } catch (error) {
       console.warn('[NasNotes] fetch meta failed, use cached', error);
     }
-    // 有会话令牌时先验证它还有效（服务器重启后会失效），有效才可直接进登录页等待解锁
     if (sessionToken) {
       try {
         const resp = await fetch('/api/notes', { headers: authHeaders() });
@@ -3313,7 +3949,10 @@ els.importFile.addEventListener('change', () => {
     }
   }
 
+  offlineReady = Boolean(vaultMeta && vaultMeta.wrapped);
   showLockScreen(vaultMeta && vaultMeta.salt ? 'unlock' : 'init');
   renderList();
   renderEditor();
+  updateSyncUI();
+  updateServerLabel();
 })();

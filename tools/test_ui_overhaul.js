@@ -180,7 +180,8 @@ ok('分类改名/删除按钮不再永远隐藏', () => {
 });
 
 ok('Service Worker 缓存已升版到 v21', () => {
-  assert.match(sw, /const CACHE = 'nas-notes-v21'/);
+  const cachedVer = Number((/const CACHE = 'nas-notes-v(\d+)'/.exec(sw) || [0, '0'])[1]);
+  assert.ok(cachedVer >= 22, 'CACHE 版本需 >= 22，当前 ' + cachedVer);
 });
 
 console.log('\nUI overhaul tests: ' + pass + ' pass');

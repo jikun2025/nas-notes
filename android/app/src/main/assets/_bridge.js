@@ -48,16 +48,17 @@
           return;
         }
         var cb = nextCb();
+        // 8 秒足够局域网响应；再长会让「点同步」像卡死。超时后本机数据照常保留。
         var timer = setTimeout(function () {
           delete window[cb];
-          reject(new TypeError('request timeout（服务器无响应，请检查设置中的 NAS 地址）'));
-        }, 20000);
+          reject(new TypeError('request timeout（NAS 无响应，本机数据不受影响）'));
+        }, 8000);
         window[cb] = function (status, respHeaders, text) {
           clearTimeout(timer);
           delete window[cb];
           // 原生层传回的是 headers 的 JSON 文本（不是对象），且 status=0 表示网络层失败
           if (!status) {
-            reject(new TypeError('Failed to fetch（连不上 NAS，请检查设置里的服务器地址与网络）'));
+            reject(new TypeError('Failed to fetch（连不上 NAS，本机数据不受影响）'));
             return;
           }
           var hdrs = {};
@@ -108,39 +109,41 @@
     }
   }
 
-  // 在设置对话框顶部注入「NAS 服务器地址」配置（原生 SharedPreferences 持久化）
+  // 在「设置 → 同步」面板里注入「NAS 服务器地址」（原生 SharedPreferences 持久化）。
+  // 本机读写完全不需要这个地址，只有点同步时才连它——所以它属于同步设置，
+  // 不放在设置弹窗顶部（那样会打散两级设置布局）。
   function injectServerRow() {
-    var dlg = document.getElementById('settingsDialog');
-    if (!dlg || !window.NasNative || document.getElementById('nn-server-row')) return false;
-    dlg.insertAdjacentHTML('beforeend',
-      '<h4 id="nn-server-title">NAS 服务器（本 APK 专用）</h4>' +
-      '<p class="muted" id="nn-server-hint">APK 内置界面离线运行，便签数据实时转发到该地址（仅密文）。</p>' +
-      '<div id="nn-server-row" style="display:flex;gap:8px;align-items:center;margin:6px 0 10px">' +
+    var panel = document.querySelector('.settings-panel[data-panel="sync"]');
+    if (!panel || !window.NasNative || document.getElementById('nn-server-row')) return false;
+
+    var card = panel.querySelector('.sync-card');
+    var wrap = document.createElement('div');
+    wrap.id = 'nn-server-wrap';
+    wrap.innerHTML =
+      '<label for="nn-server-input">NAS 服务器地址</label>' +
+      '<p class="muted" id="nn-server-hint">本机离线读写不需要它；只有点「立即同步」时才会连这个地址（只传密文）。</p>' +
+      '<div id="nn-server-row" style="display:flex;gap:8px;align-items:center;margin:6px 0 14px">' +
       '<input id="nn-server-input" type="text" placeholder="http://192.168.5.10:28080" style="flex:1;min-width:0;padding:8px;border-radius:8px;border:1px solid #999">' +
       '<button id="nn-server-save" type="button" style="padding:8px 14px;border-radius:8px;border:1px solid #777;background:#e8e8e8;cursor:pointer">保存并测试</button>' +
-      '</div>');
+      '</div>';
+
+    if (card) panel.insertBefore(wrap, card);
+    else panel.insertBefore(wrap, panel.firstChild);
+
     var inp = document.getElementById('nn-server-input');
     var btn = document.getElementById('nn-server-save');
-    var title = document.getElementById('nn-server-title');
-    var hint = document.getElementById('nn-server-hint');
-    var row = document.getElementById('nn-server-row');
     inp.value = window.NasNative.getServer() || '';
-    // 移到对话框最顶部（h3「设置」之后）
-    var h3 = dlg.querySelector('h3');
-    if (h3) {
-      h3.insertAdjacentElement('afterend', title);
-      title.insertAdjacentElement('afterend', hint);
-      hint.insertAdjacentElement('afterend', row);
-    }
     btn.addEventListener('click', function () {
       var v = (inp.value || '').trim().replace(/\/+$/, '');
       if (!/^https?:\/\/[^\/\s]+$/.test(v)) { toast('地址格式：http(s)://IP或域名[:端口]'); return; }
       window.NasNative.setServer(v);
+      var label = document.getElementById('syncServerAddr');
+      if (label) label.textContent = v;
       toast('已保存，正在测试连接…');
       // 走被劫持的 fetch，才会真正转发到 NAS（origFetch 会落到虚拟域，永远"成功"）
       window.fetch(ASSET_ORIGIN + '/api/health')
         .then(function (r) { toast(r.status < 500 ? '连接正常 ✓' : '服务器响应异常(' + r.status + ')'); })
-        .catch(function () { toast('连接失败，请检查地址、端口与 NAS 服务状态'); });
+        .catch(function () { toast('连接失败：本机离线功能不受影响，检查地址/端口/NAS 服务即可'); });
     });
     return true;
   }
@@ -150,14 +153,6 @@
     if (rounds > 0) setTimeout(function () { tryInject(rounds - 1); }, 400);
   }
 
-  // 页面加载后与每次打开设置时都尝试注入（设置对话框内容由前端动态 show）
-  document.addEventListener('click', function (e) {
-    var t = e.target;
-    while (t) {
-      if (t.id === 'settingsBtn') { setTimeout(function () { tryInject(8); }, 250); break; }
-      t = t.parentElement;
-    }
-  }, true);
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', function () { tryInject(12); });
   } else {

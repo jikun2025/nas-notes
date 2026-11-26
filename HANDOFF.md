@@ -42,10 +42,14 @@ python tools/test_auth_api.py          # 账户/会话/改密/限速/穿越 37 �
 node tools/test_cryptofb.js            # crypto 兜底层字节级互操作 49 项
 node tools/test_legacy_migration.js    # 旧库→wkey 包裹 端到端迁移 16 项
 node tools/test_md_table_fs.js         # Markdown 表格/字号渲染 22 项
-node tools/test_login_ui.js            # 登录页隐藏字段/清库警示 7 项
+node tools/test_login_ui.js            # 登录页隐藏字段/清库警示/NAS 地址框 10 项
 node tools/test_ui_overhaul.js         # 三区布局/工具栏两行与手机横滑/标题计数与保存/两级设置/右键菜单/分类清单 14 项
 node tools/test_rich_editor.js         # 富文本模式 + HTML→Markdown 往返 11 项（真实浏览器）
 node tools/test_shell_assets.js        # 安卓壳：内联页/MIME/原生桥/打包配置 6 项
+node tools/test_shell_page.js          # 壳内联页渲染 + 桥接 3 项（真实浏览器）
+node tools/test_offline_mode.js        # 离线独立：本机建库→断网读写→离线解锁→零 /api 29 项（真实浏览器）
+node tools/test_offline_sync.js        # 离线库→手动连 NAS→密文上云 10 项（真实浏览器 + 真实 server.py）
+node tools/test_login_server.js        # 登录页 NAS 地址回填/归一化/登录前落盘 8 项（真实浏览器）
 ```
 
 再测登录（账户名+密码）、`/api/meta` 初始化、便签密文写入读回、设置里改名改密、锁定/解锁后搜索；UI 改动另需浏览器实测：三区布局与分类筛选、富文本/源码/分栏/预览四种视图切换、富文本下工具栏加粗/标题/列表/表格是否直接生效且源码视图同步出现 `**` `#`、两级设置切换、右键/长按菜单改分类与删除、字号下拉即时生效、段落下拉切换标题级别、标题/正文字数计数、顶部「保存」立即落盘、手机端工具栏单行横滑、表格一键插入与增删行列。详细文档见 `README.md` 与 `SECURITY.md`。

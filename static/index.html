@@ -16,6 +16,15 @@
       <div class="lock-logo">轻签</div>
       <h1 id="lockTitle">登录轻签</h1>
       <p id="lockHint" class="muted">输入账户名和密码（默认 admin / admin）登录。密码只在本机内存中用于解密，服务器只存哈希和密文。</p>
+      <div id="lockServerBlock" class="lock-server" hidden>
+        <label for="lockServerInput">NAS 地址</label>
+        <div class="lock-server-row">
+          <input id="lockServerInput" type="text" inputmode="url" autocapitalize="none" spellcheck="false" placeholder="http://192.168.5.10:28080">
+          <button id="lockServerTestBtn" class="ghost small" type="button">测试</button>
+        </div>
+        <p id="lockServerState" class="lock-server-state" hidden></p>
+        <p class="muted tiny">填 NAS 的 IP 与端口，例如 192.168.5.10:28080。只有「登录并同步」会连它；留空则沿用上次保存的地址。</p>
+      </div>
       <label for="usernameInput">账户名</label>
       <input id="usernameInput" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="默认 admin">
       <label id="passphraseLabel" for="passphraseInput">密码</label>
@@ -24,6 +33,8 @@
       <input id="confirmInput" type="password" autocomplete="new-password" placeholder="重复密码" hidden>
       <p id="lockError" class="lock-error" hidden></p>
       <button id="unlockBtn" class="primary block" type="button">登录</button>
+      <button id="lockLocalBtn" class="ghost block small" type="button" hidden>仅在本机使用（不连接 NAS）</button>
+      <p id="lockOfflineNote" class="muted tiny" hidden>本机模式：便签只加密保存在这台手机上，不联网也能读写；需要多端同步时再连接 NAS。</p>
       <p class="muted tiny">密码丢失无法恢复。<button id="resetVaultBtn" class="linkbtn" type="button">忘记密码？</button></p>
       <div id="resetPanel" class="reset-panel" hidden>
         <p class="reset-warning"><b>危险操作：不可撤销</b><br>将永久删除服务器和本机上的<b>全部便签、图片和录音</b>，并重建空加密库。账户名和密码不会改变。</p>
@@ -54,7 +65,10 @@
     <!-- 区域二：便签列表 -->
     <section class="note-pane" id="notePane">
       <header class="note-pane-head">
-        <div class="note-pane-title"><h2>便签</h2><span id="syncBadge" class="badge">未解锁</span></div>
+        <div class="note-pane-title">
+          <h2>便签</h2>
+          <button id="syncBadge" class="badge sync-chip" type="button" title="点击与 NAS 手动同步">未解锁</button>
+        </div>
         <button id="newBtn" class="primary new-btn" type="button" title="新建便签">＋ 新建</button>
       </header>
       <div class="search-wrap">
@@ -208,17 +222,27 @@
             <p class="muted">保存后旧会话立即失效，本机将用新账户自动重新登录。</p>
           </section>
           <section class="settings-panel" data-panel="sync" hidden>
-            <p class="settings-lead">离线修改先写入本机 IndexedDB（仅密文）。多端同时编辑按时间戳裁决，时间相同按设备标识裁决。</p>
+            <p class="settings-lead">便签始终先加密写入本机，断网也能读写。与 NAS 的同步只在你点「立即同步」时发生，不会在后台自动联网。</p>
+            <div class="sync-card">
+              <div class="sync-card-row"><span>本机数据</span><b id="syncLocalState">未解锁</b></div>
+              <div class="sync-card-row"><span>待同步</span><b id="syncPendingCount">—</b></div>
+              <div class="sync-card-row"><span>上次同步</span><b id="syncLastAt">从未同步</b></div>
+              <div class="sync-card-row"><span>服务器</span><b id="syncServerAddr">同源（浏览器直连）</b></div>
+            </div>
+            <button id="syncNowSettings" class="primary block" type="button">↻ 立即与 NAS 同步</button>
+            <p id="syncMsg" class="muted tiny" hidden></p>
+            <hr class="settings-sep">
             <label for="deviceInput">设备标识（用于同步冲突裁决）</label>
             <input id="deviceInput" type="text" placeholder="自动生成" autocomplete="off">
             <label for="syncMode">同步方式</label>
             <select id="syncMode">
+              <option value="manual">手动（仅点击「同步」按钮，推荐）</option>
               <option value="auto">自动（编辑后、解锁、联网及定时同步）</option>
-              <option value="manual">手动（仅点击左侧「同步」按钮）</option>
             </select>
             <label for="syncInterval">自动同步间隔（秒）</label>
             <input id="syncInterval" type="number" min="10" max="86400" step="10" value="60" inputmode="numeric">
             <p class="muted">可填 10～86400 秒（10 秒～24 小时），仅「自动」模式生效。设置只保存在本机。</p>
+            <p class="muted">多端同时编辑按时间戳裁决，时间相同按设备标识裁决。</p>
           </section>
           <section class="settings-panel" data-panel="appearance" hidden>
             <p class="settings-lead">外观设置只保存在本机，不影响便签内容。</p>
@@ -313,6 +337,20 @@
     <div class="dialog-actions">
       <button id="textDialogCancel" class="ghost" type="button">取消</button>
       <button id="textDialogOk" class="primary" type="button">确定</button>
+    </div>
+  </dialog>
+
+  <dialog id="syncLoginDialog" class="compact-dialog" aria-label="连接 NAS">
+    <h3>连接 NAS 同步</h3>
+    <p id="syncLoginHint" class="muted">本机修改已加密保存，同步只是把两边对齐。需要 NAS 上的账户密码。</p>
+    <label for="syncUser">账户名</label>
+    <input id="syncUser" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="admin">
+    <label for="syncPass">密码</label>
+    <input id="syncPass" type="password" autocomplete="current-password" placeholder="NAS 账户密码">
+    <p id="syncLoginError" class="lock-error" hidden></p>
+    <div class="dialog-actions">
+      <button id="syncLoginCancel" class="ghost" type="button">稍后</button>
+      <button id="syncLoginOk" class="primary" type="button">连接并同步</button>
     </div>
   </dialog>
 
