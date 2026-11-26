@@ -12,6 +12,7 @@ const html = read('index.html');
 const css = read('style.css');
 const app = read('app.js');
 const sw = read('sw.js');
+const java = fs.readFileSync(path.join(ROOT, 'android/app/src/main/java/com/nasnotes/app/MainActivity.java'), 'utf8');
 
 let pass = 0;
 function ok(name, fn) {
@@ -122,6 +123,44 @@ ok('三区布局：分类栏 + 便签列表 + 编辑预览区', () => {
   assert.match(app, /function notesInActiveFolder\(\)/);
 });
 
+ok('手机端分类栏是「可收起的抽屉」，不再直接隐藏', () => {
+  assert.match(html, /id="railToggleBtn"/);
+  assert.match(html, /id="railCloseBtn"/);
+  assert.match(html, /id="railScrim"/);
+  assert.match(app, /function railIsDrawer\(\)/);
+  assert.match(app, /function setRailOpen\(open\)/);
+  assert.match(app, /classList\.toggle\('rail-open'/);
+  assert.match(app, /els\.railToggleBtn\.addEventListener\('click'/);
+  assert.match(app, /els\.railCloseBtn\.addEventListener\('click', closeRail\)/);
+  assert.match(app, /els\.railScrim\.addEventListener\('click', closeRail\)/);
+  // 点分类、进编辑、锁屏都要自动收起，否则抽屉会一直压着列表
+  assert.match(app, /if \(railIsDrawer\(\)\) closeRail\(\);/);
+  assert.match(app, /classList\.contains\('rail-open'\)\) closeRail\(\);/);
+
+  const narrow = css.slice(css.indexOf('@media (max-width: 1180px)'), css.indexOf('@media (max-width: 860px)'));
+  assert.doesNotMatch(narrow, /\.sidebar\s*\{[^}]*display:\s*none/);
+  assert.match(narrow, /body\.rail-open \.sidebar\s*\{[^}]*translateX\(0\)/);
+  assert.match(narrow, /\.rail-toggle\s*\{[^}]*display:\s*inline-flex/);
+  // 侧栏底部还有同步/锁定/设置三个入口，手机上也必须能点到
+  assert.match(html, /id="syncBtn"/);
+  assert.match(html, /id="lockBtn"/);
+  assert.match(html, /id="settingsBtn"/);
+});
+
+ok('系统栏安全区：状态栏不再压住顶部标题', () => {
+  assert.match(css, /--safe-top:\s*var\(--nn-safe-top,\s*env\(safe-area-inset-top/);
+  assert.match(css, /--safe-bottom:\s*var\(--nn-safe-bottom,\s*env\(safe-area-inset-bottom/);
+  assert.match(css, /\.note-pane-head\s*\{[^}]*var\(--safe-top\)/);
+  assert.match(css, /\.editor-head\s*\{[^}]*var\(--safe-top\)/);
+  assert.match(css, /\.rail-brand\s*\{[^}]*var\(--safe-top\)/);
+  assert.match(css, /\.lock-screen\s*\{[\s\S]*?var\(--safe-top\)/);
+  assert.match(css, /\.note-list\s*\{[^}]*var\(--safe-bottom\)/);
+  // 原生层把真实 insets 写成 CSS 变量；页面载入完成后补写一次
+  assert.match(java, /private void installSafeInsets\(\)/);
+  assert.match(java, /setProperty\('--nn-safe-top'/);
+  assert.match(java, /public void onPageFinished[\s\S]{0,200}injectSafeInsets\(\)/);
+});
+
 ok('视图切换固定在编辑器顶部，不再藏在横向工具栏里', () => {
   const head = html.slice(html.indexOf('class="editor-head"'), html.indexOf('class="editor-scroll"'));
   ['rich', 'source', 'split', 'view'].forEach((view) => {
@@ -179,9 +218,9 @@ ok('分类改名/删除按钮不再永远隐藏', () => {
   assert.doesNotMatch(block, /const custom =/);
 });
 
-ok('Service Worker 缓存已升版到 v21', () => {
+ok('Service Worker 缓存已升版', () => {
   const cachedVer = Number((/const CACHE = 'nas-notes-v(\d+)'/.exec(sw) || [0, '0'])[1]);
-  assert.ok(cachedVer >= 22, 'CACHE 版本需 >= 22，当前 ' + cachedVer);
+  assert.ok(cachedVer >= 25, 'CACHE 版本需 >= 25，当前 ' + cachedVer);
 });
 
 console.log('\nUI overhaul tests: ' + pass + ' pass');

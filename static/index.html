@@ -52,6 +52,7 @@
       <div class="rail-brand">
         <span class="brand-mark">签</span>
         <span class="rail-brand-text">轻签<small>加密便签</small></span>
+        <button id="railCloseBtn" class="rail-close" type="button" aria-label="收起分类栏">×</button>
       </div>
       <div class="rail-label">分类</div>
       <nav id="folderRail" class="folder-rail" aria-label="按分类筛选便签"></nav>
@@ -61,10 +62,12 @@
         <button id="settingsBtn" class="ghost" type="button" title="设置">⚙</button>
       </footer>
     </aside>
+    <div id="railScrim" class="rail-scrim" aria-hidden="true"></div>
 
     <!-- 区域二：便签列表 -->
     <section class="note-pane" id="notePane">
       <header class="note-pane-head">
+        <button id="railToggleBtn" class="rail-toggle" type="button" aria-label="打开分类栏" aria-controls="sidebar" aria-expanded="false">☰</button>
         <div class="note-pane-title">
           <h2>便签</h2>
           <button id="syncBadge" class="badge sync-chip" type="button" title="点击与 NAS 手动同步">未解锁</button>

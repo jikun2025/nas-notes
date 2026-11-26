@@ -9,12 +9,14 @@ import android.content.pm.PackageManager;
 import android.graphics.Bitmap;
 import android.graphics.Color;
 import android.net.Uri;
+import android.os.Build;
 import android.os.Bundle;
 import android.os.Handler;
 import android.os.Looper;
 import android.util.TypedValue;
 import android.view.KeyEvent;
 import android.view.View;
+import android.view.WindowInsets;
 import android.webkit.ConsoleMessage;
 import android.webkit.JavascriptInterface;
 import android.webkit.PermissionRequest;
@@ -109,6 +111,7 @@ public class MainActivity extends Activity {
         root.addView(errorView, new FrameLayout.LayoutParams(
                 FrameLayout.LayoutParams.MATCH_PARENT, FrameLayout.LayoutParams.MATCH_PARENT));
         setContentView(root);
+        installSafeInsets();
 
         WebSettings s = webView.getSettings();
         s.setJavaScriptEnabled(true);
@@ -128,6 +131,62 @@ public class MainActivity extends Activity {
 
     private int dp(int value) {
         return Math.round(getResources().getDisplayMetrics().density * value);
+    }
+
+    // ---------- 系统栏安全区 ----------
+    // targetSdk 35 起安卓强制 edge-to-edge，WebView 会画到状态栏/手势条下面，
+    // 手机端顶部标题与视图切换按钮因此被压住。这里把真实 insets 写成 CSS 变量
+    // （--nn-safe-*），样式表用 var(--safe-top) 消费；浏览器直连时同一套变量
+    // 退化为 env(safe-area-inset-*)，两条路径都不需要各自写死数值。
+    private int safeTop, safeBottom, safeLeft, safeRight;
+
+    private void installSafeInsets() {
+        if (Build.VERSION.SDK_INT < 21) return;
+        getWindow().getDecorView().setOnApplyWindowInsetsListener((v, insets) -> {
+            int top, bottom, left, right;
+            if (Build.VERSION.SDK_INT >= 30) {
+                android.graphics.Insets bars = insets.getInsets(
+                        WindowInsets.Type.systemBars() | WindowInsets.Type.displayCutout());
+                top = bars.top;
+                bottom = bars.bottom;
+                left = bars.left;
+                right = bars.right;
+            } else {
+                top = insets.getSystemWindowInsetTop();
+                bottom = insets.getSystemWindowInsetBottom();
+                left = insets.getSystemWindowInsetLeft();
+                right = insets.getSystemWindowInsetRight();
+            }
+            applySafeInsets(top, bottom, left, right);
+            return insets;
+        });
+    }
+
+    private void applySafeInsets(int top, int bottom, int left, int right) {
+        if (top == safeTop && bottom == safeBottom && left == safeLeft && right == safeRight) return;
+        safeTop = top;
+        safeBottom = bottom;
+        safeLeft = left;
+        safeRight = right;
+        injectSafeInsets();
+    }
+
+    /** 把 insets 折成 dp（= CSS px）写进页面；页面重载后由 onPageFinished 再补一次。 */
+    private void injectSafeInsets() {
+        if (webView == null) return;
+        float density = getResources().getDisplayMetrics().density;
+        if (density <= 0f) density = 1f;
+        String js = "(function(){var r=document.documentElement;if(!r||!r.style)return;"
+                + "r.style.setProperty('--nn-safe-top','" + Math.round(safeTop / density) + "px');"
+                + "r.style.setProperty('--nn-safe-bottom','" + Math.round(safeBottom / density) + "px');"
+                + "r.style.setProperty('--nn-safe-left','" + Math.round(safeLeft / density) + "px');"
+                + "r.style.setProperty('--nn-safe-right','" + Math.round(safeRight / density) + "px');"
+                + "})();";
+        try {
+            webView.evaluateJavascript(js, null);
+        } catch (Exception ignored) {
+            // 页面还没就绪时忽略，onPageFinished 会重试
+        }
     }
 
     /**
@@ -389,6 +448,12 @@ public class MainActivity extends Activity {
 
         @Override
         public void onPageStarted(WebView view, String url, Bitmap favicon) { }
+
+        @Override
+        public void onPageFinished(WebView view, String url) {
+            // 页面（重新）载入后 style 上的自定义属性已丢失，补写一次安全区
+            injectSafeInsets();
+        }
 
         @Override
         public void onReceivedError(WebView view, WebResourceRequest request, WebResourceError error) {

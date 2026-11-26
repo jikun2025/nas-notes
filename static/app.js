@@ -63,6 +63,10 @@ const els = {
   resetVaultConfirmBtn: document.getElementById('resetVaultConfirmBtn'),
   resetCancelBtn: document.getElementById('resetCancelBtn'),
   syncBadge: document.getElementById('syncBadge'),
+  sidebarEl: document.getElementById('sidebar'),
+  railToggleBtn: document.getElementById('railToggleBtn'),
+  railCloseBtn: document.getElementById('railCloseBtn'),
+  railScrim: document.getElementById('railScrim'),
   folderRail: document.getElementById('folderRail'),
   folderFilter: document.getElementById('folderFilter'),
   newBtn: document.getElementById('newBtn'),
@@ -610,6 +614,24 @@ function syncMsgShow(message, isError) {
   els.syncMsg.hidden = !message;
   els.syncMsg.className = 'muted tiny' + (isError ? ' error-text' : '');
 }
+
+// ---------- 窄屏分类抽屉（≤1180px 侧栏不再常驻） ----------
+function railIsDrawer() {
+  try {
+    return window.matchMedia('(max-width: 1180px)').matches;
+  } catch (error) {
+    return window.innerWidth <= 1180;
+  }
+}
+
+function setRailOpen(open) {
+  const want = Boolean(open) && railIsDrawer();
+  document.body.classList.toggle('rail-open', want);
+  if (els.railToggleBtn) els.railToggleBtn.setAttribute('aria-expanded', want ? 'true' : 'false');
+}
+
+function openRail() { setRailOpen(true); }
+function closeRail() { setRailOpen(false); }
 
 function setSaveState(text) {
   els.saveState.textContent = text;
@@ -1646,6 +1668,7 @@ async function lockApp() {
   plainCache.clear();
   folderRegistry = [];
   currentId = null;
+  closeRail();
   document.body.classList.remove('show-editor');
   els.titleInput.value = '';
   els.bodyInput.value = '';
@@ -2380,6 +2403,7 @@ function renderEditor() {
 function selectNote(id) {
   currentId = id;
   applyViewMode(viewMode, false);
+  closeRail();
   document.body.classList.add('show-editor');
   renderList();
   renderEditor();
@@ -2958,6 +2982,7 @@ document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
   if (!els.noteContextMenu.hidden) hideContextMenu();
   if (!els.folderContextMenu.hidden) hideFolderContextMenu();
+  if (document.body.classList.contains('rail-open')) closeRail();
 });
 
 async function openFolderDialog(id) {
@@ -3018,16 +3043,40 @@ els.folderDialogSelect.addEventListener('change', syncFolderDialogNew);
 els.searchInput.addEventListener('input', renderList);
 els.syncBtn.addEventListener('click', () => { clearTimeout(syncTimer); doManualSync(); });
 
-// 分类筛选：左栏按钮（宽屏）与列表上方下拉（窄屏）共用同一状态。
+// 分类筛选：左栏按钮（宽屏常驻 / 窄屏抽屉）与列表上方下拉共用同一状态。
 els.folderRail.addEventListener('click', (event) => {
   const btn = event.target.closest('[data-folder]');
   if (!btn) return;
   activeFolder = btn.dataset.folder || '';
   renderList();
+  // 手机上选完分类就把抽屉收起来，否则挡着列表看不到结果
+  if (railIsDrawer()) closeRail();
 });
 els.folderFilter.addEventListener('change', () => {
   activeFolder = els.folderFilter.value || '';
   renderList();
+});
+
+// 抽屉开关：列表头 ☰ 打开，× / 遮罩 / Esc 收起；侧栏底部按钮点完也收。
+if (els.railToggleBtn) {
+  els.railToggleBtn.addEventListener('click', () => {
+    if (document.body.classList.contains('rail-open')) closeRail();
+    else openRail();
+  });
+}
+if (els.railCloseBtn) els.railCloseBtn.addEventListener('click', closeRail);
+if (els.railScrim) els.railScrim.addEventListener('click', closeRail);
+if (els.sidebarEl) {
+  // 用捕获阶段兜住「同步 / 锁定 / 设置」这类会弹窗或切屏的按钮，
+  // 先让各自 handler 跑完，再把抽屉收起来。
+  els.sidebarEl.addEventListener('click', (event) => {
+    if (!railIsDrawer()) return;
+    if (!event.target.closest('.rail-foot button')) return;
+    setTimeout(closeRail, 0);
+  });
+}
+window.addEventListener('resize', () => {
+  if (!railIsDrawer()) closeRail();
 });
 
 // 视图切换：编辑 / 分栏 / 预览，位置固定在编辑器顶部，不会被工具栏挤没。

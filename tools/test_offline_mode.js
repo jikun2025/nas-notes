@@ -113,7 +113,7 @@ ok('壳内 NAS 地址放在同步面板里', () => {
 
 ok('Service Worker 缓存已升版', () => {
   const cached = Number((/const CACHE = 'nas-notes-v(\d+)'/.exec(sw) || [0, '0'])[1]);
-  assert.ok(cached >= 22, 'CACHE 版本需 >= 22，当前 ' + cached);
+  assert.ok(cached >= 25, 'CACHE 版本需 >= 25，当前 ' + cached);
 });
 
 // ---------- 真实浏览器：完整离线流程 ----------

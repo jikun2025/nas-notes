@@ -54,7 +54,7 @@ ok('服务端清库只删 vault 与 notes，不动 accounts', () => {
 
 ok('Service Worker 缓存已升版', () => {
   const cached = Number((/const CACHE = 'nas-notes-v(\d+)'/.exec(sw) || [0, '0'])[1]);
-  assert.ok(cached >= 22, 'CACHE 版本需 >= 22，当前 ' + cached);
+  assert.ok(cached >= 25, 'CACHE 版本需 >= 25，当前 ' + cached);
 });
 
 ok('登录页有 NAS 地址框且默认隐藏（仅安卓壳显示）', () => {

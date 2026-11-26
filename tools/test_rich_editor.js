@@ -91,7 +91,7 @@ ok('图片渲染带 data-att，才能往返成占位符', () => {
 
 ok('Service Worker 缓存已升版并纳入 html2md.js', () => {
   const cachedVer = Number((/const CACHE = 'nas-notes-v(\d+)'/.exec(sw) || [0, '0'])[1]);
-  assert.ok(cachedVer >= 22, 'CACHE 版本需 >= 22，当前 ' + cachedVer);
+  assert.ok(cachedVer >= 25, 'CACHE 版本需 >= 25，当前 ' + cachedVer);
   assert.match(sw, /'\/html2md\.js'/);
 });
 

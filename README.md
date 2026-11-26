@@ -7,6 +7,7 @@
 ## 功能
 
 - **NAS Web UI**：三区布局（分类栏 / 便签列表 / 编辑预览区，借鉴 Joplin 的信息层级）；四种视图可随时切换——**富文本**（默认，直接看排版，不显示 Markdown 符号）/ 源码 / 分栏 / 预览。
+- **窄屏/手机布局**：分类栏不消失，而是收成**可滑出的抽屉**——列表头「☰」打开，点遮罩、×、选中分类或进入便签都会收起；同步 `↻`、锁定 `🔒`、设置 `⚙` 三个入口在抽屉底部，手机上也点得到。顶部（列表头、编辑区头、登录卡片）按系统栏安全区自动让位，状态栏与手势条不会压住按钮。
 - **便签快捷操作**：列表项右键（手机长按）可打开、调整分类或删除；分类可新建/改名/删除，分类栏右键（手机长按）同样能改名或删除——没有便签的空分类也能留下并随时清理。分类清单与便签一样用保险库密钥加密后存本机（IndexedDB），换设备时按便签里带的分类名自动重建。
 - **编辑区头部**：标题框内嵌字数计数（`n/200`），右侧「✓ 保存」可立即加密落盘并触发一次同步；分类以胶囊标签显示，便于一眼看清归档位置。
 - **编辑工具栏**：桌面两行分组——上行「段落 / 字号」下拉加加粗、斜体、删除线、列表、待办、引用、代码、链接，下行插入图片/录音、表格与行列调整、分隔线；手机上合并为一行，可左右滑动（右缘渐隐提示）。
@@ -51,6 +52,7 @@
 - 加载有两层：先走虚拟域（`loadUrl`，origin 最标准）；若主文档没拿到或首屏 2.2 秒后仍是空白，自动降级为「CSS/JS 全部内联进 HTML + `loadDataWithBaseURL`」——有些 WebView/安卓兼容层（例如鸿蒙上的安卓运行环境）不回调 `shouldInterceptRequest`，静态资源会全 404。降级后只有 `/api/` 需要网络，走原生桥。
 - **两条路径都必须注入壳标记与 `_bridge.js`**（Java 里统一走 `injectShellScripts()`）：虚拟域路径下首页是由拦截器返回的，若原样吐 assets 里的 `index.html`，`fetch('/api/*')` 会落到静态资源拦截器上拿到 `502 Bridge Unavailable`，而且 `__NN_SHELL__` 缺失会让同步模式退回「自动」。
 - 真出现白屏时，屏幕上会直接摊开诊断信息（WebView 包名与版本、UA、错误级控制台输出），截图即可定位，不用盲猜。
+- **系统栏安全区**：`targetSdk 35` 起安卓强制 edge-to-edge，WebView 会画到状态栏/手势条下面。原生层把真实 insets 写成 CSS 变量（`--nn-safe-top/bottom/left/right`），页面用 `var(--safe-top)` 消费，头部与底部自动让位；浏览器直连时同一套变量退化为 `env(safe-area-inset-*)`，两条路径都不用写死数值。
 - 壳内不注册 Service Worker（资源已内联，没有需要缓存的网络请求）。
 - **离线独立**：App 打开即可用，启动不请求 NAS。首次可点「仅在本机使用」用当前密码建本机加密库（不联网），之后也能正常读写、搜索、看图听录音。
 - **手动同步**：壳内同步方式默认「手动」。列表顶部那颗状态胶囊既是状态（离线可用 / 待同步 N / 已同步 时间），也是同步入口——点了才弹「连接 NAS」，输了账户密码才联网。
@@ -203,13 +205,14 @@ node tools/test_cryptofb.js            # crypto 兜底层与 Node 字节级互�
 node tools/test_legacy_migration.js    # 旧库→wkey 包裹结构端到端迁移 16 项
 node tools/test_md_table_fs.js         # Markdown 表格/字号渲染 22 项
 node tools/test_login_ui.js            # 登录页隐藏字段/清库警示/NAS 地址框静态回归 10 项
-node tools/test_ui_overhaul.js         # 三区布局/工具栏两行与手机横滑/标题计数与保存/两级设置/右键菜单/分类清单 14 项
+node tools/test_ui_overhaul.js         # 三区布局/工具栏两行与手机横滑/标题计数与保存/两级设置/右键菜单/分类清单 16 项
 node tools/test_rich_editor.js         # 富文本模式结构 + HTML→Markdown 往返稳定 11 项（含真实浏览器）
 node tools/test_shell_assets.js        # 安卓壳：内联页/MIME 编码/原生桥/打包配置 7 项
 node tools/test_shell_page.js          # 安卓壳内联页真实浏览器渲染 + 桥接 6 项
 node tools/test_offline_mode.js        # 离线独立：本机建库→断网读写→离线解锁→零 /api 请求 29 项（含真实浏览器）
 node tools/test_offline_sync.js        # 离线库→手动连 NAS→密文上云 10 项（含真实浏览器 + 真实 server.py）
 node tools/test_login_server.js        # 登录页 NAS 地址：回填/归一化/登录前落盘 8 项（含真实浏览器）
+node tools/test_mobile_layout.js      # 手机布局：分类抽屉 + 状态栏安全区 21 项（含真实浏览器截图）
 ```
 
 `test_rich_editor.js` 会启动一个临时本地静态服务，再用系统自带 Edge/Chrome 的 headless 模式跑 `tools/rich-fixture.html`：把 16 组 Markdown 渲染成 DOM，序列化回 Markdown，再渲染一遍，要求两次 HTML 完全一致（含代码块、表格、任务列表、图片占位、字号包裹）。找不到浏览器时该用例自动跳过。
