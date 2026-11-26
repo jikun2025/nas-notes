@@ -12,7 +12,8 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        python: ["3.9", "3.12"]
+        # 3.9 已于 2025-10 EOL，GitHub 不再提供其构建，会卡在 setup-python 步骤
+        python: ["3.11", "3.13"]
 
     steps:
       - uses: actions/checkout@v5
