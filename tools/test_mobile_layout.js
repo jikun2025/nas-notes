@@ -216,6 +216,72 @@ const PHASE_EDIT = String.raw`(async () => {
     info.viewButtons = Array.from(document.querySelectorAll('.view-switch button'))
       .filter((b) => visible(b)).length;
     step('视图切换按钮全部可见', info.viewButtons === 4, 'count=' + info.viewButtons);
+
+    // 长正文：把内容撑长后往下滑，标题与工具栏必须还钉在顶部
+    const rich = document.getElementById('richEditor');
+    rich.innerHTML = Array.from({ length: 60 }, (_, i) =>
+      '<p>第 ' + (i + 1) + ' 行正文，用来把编辑区撑长，检查固定条是否跟着滚走。</p>').join('');
+    rich.dispatchEvent(new Event('input', { bubbles: true }));
+    await new Promise((r) => setTimeout(r, 400));
+    const scroll = document.getElementById('editorScroll');
+    scroll.scrollTop = 900;
+    await new Promise((r) => setTimeout(r, 250));
+    const bar = document.getElementById('editorBar');
+    const barRect = rect(bar);
+    const headRect = rect(document.querySelector('.editor-head'));
+    const toolbarRect = rect(document.getElementById('mdToolbar'));
+    info.scrollTop = Math.round(scroll.scrollTop);
+    step('正文确实滚动了', info.scrollTop > 100, 'scrollTop=' + info.scrollTop);
+    step('下滑后标题/工具栏仍钉在编辑头下方',
+      Math.abs(barRect.top - headRect.bottom) < 2 && barRect.bottom <= window.innerHeight,
+      'barTop=' + Math.round(barRect.top) + ' headBottom=' + Math.round(headRect.bottom));
+    step('工具栏整体在视口内，随时可点',
+      toolbarRect.top >= headRect.bottom - 1 && toolbarRect.bottom < window.innerHeight,
+      'toolbar=' + Math.round(toolbarRect.top) + '~' + Math.round(toolbarRect.bottom));
+    step('固定条出现"钉住"投影', bar.classList.contains('is-stuck'));
+    return JSON.stringify(info);
+  } catch (error) {
+    info.error = String(error && error.message);
+    return JSON.stringify(info);
+  }
+})()`;
+
+// 阶段四：设置里最长的面板要能滚，底部保存条不能被挤出屏幕
+const PHASE_SETTINGS = String.raw`(async () => {
+  const info = { steps: [] };
+  const step = (name, good, extra) => info.steps.push({ name, ok: !!good, extra: extra === undefined ? '' : String(extra) });
+  ${HELPERS}
+  try {
+    document.getElementById('railToggleBtn').click();
+    await new Promise((r) => setTimeout(r, 340));
+    document.getElementById('settingsBtn').click();
+    const dlg = document.getElementById('settingsDialog');
+    await waitFor(() => dlg && (dlg.open || dlg.hasAttribute('open')), 6000);
+    await new Promise((r) => setTimeout(r, 260));
+    document.querySelector('[data-settings-panel="sync"]').click();
+    await new Promise((r) => setTimeout(r, 260));
+
+    const body = dlg.querySelector('.settings-body');
+    const foot = dlg.querySelector('.settings-foot');
+    const dlgRect = rect(dlg);
+    info.viewport = window.innerHeight;
+    info.dialogTop = Math.round(dlgRect.top);
+    info.dialogBottom = Math.round(dlgRect.bottom);
+    step('设置对话框完整落在屏幕内', dlgRect.top >= -1 && dlgRect.bottom <= window.innerHeight + 1,
+      'top=' + info.dialogTop + ' bottom=' + info.dialogBottom + ' vh=' + info.viewport);
+    step('内容区可滚动（同步面板比屏幕长）', body.scrollHeight > body.clientHeight + 20,
+      'scrollH=' + body.scrollHeight + ' clientH=' + body.clientHeight);
+    step('底部保存按钮始终在视口内', rect(foot).height > 0 && rect(foot).bottom <= window.innerHeight + 1,
+      'footBottom=' + Math.round(rect(foot).bottom));
+
+    body.scrollTop = body.scrollHeight;
+    await new Promise((r) => setTimeout(r, 260));
+    info.scrolled = Math.round(body.scrollTop);
+    const panel = document.querySelector('.settings-panel[data-panel="sync"]');
+    const lastRow = panel.lastElementChild;
+    step('能滚到底看到面板最后一行',
+      rect(lastRow).bottom <= rect(body).bottom + 2, 'lastBottom=' + Math.round(rect(lastRow).bottom) + ' bodyBottom=' + Math.round(rect(body).bottom));
+    step('滚到底后保存按钮没被顶走', rect(foot).bottom <= window.innerHeight + 1);
     return JSON.stringify(info);
   } catch (error) {
     info.error = String(error && error.message);
@@ -378,10 +444,13 @@ function getJson(url) {
     console.log('  抽屉截图：' + await shot('mobile-rail.png'));
     const edit = await run(PHASE_EDIT, '编辑阶段');
     console.log('  编辑截图：' + await shot('mobile-editor.png'));
+    const settings = await run(PHASE_SETTINGS, '设置阶段');
+    console.log('  设置截图：' + await shot('mobile-settings.png'));
 
     if (setup.noteItems < 1) process.exitCode = 1;
     if (!rail.open) process.exitCode = 1;
     if (!edit.editorShown) process.exitCode = 1;
+    if (!(settings.scrolled > 20)) process.exitCode = 1;
   } finally {
     cleanup();
   }

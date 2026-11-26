@@ -115,6 +115,8 @@ const els = {
   backBtn: document.getElementById('backBtn'),
   deleteBtn: document.getElementById('deleteBtn'),
   editorMeta: document.getElementById('editorMeta'),
+  editorBar: document.getElementById('editorBar'),
+  editorScroll: document.getElementById('editorScroll'),
   titleInput: document.getElementById('titleInput'),
   titleCount: document.getElementById('titleCount'),
   bodyCount: document.getElementById('bodyCount'),
@@ -2407,6 +2409,9 @@ function selectNote(id) {
   document.body.classList.add('show-editor');
   renderList();
   renderEditor();
+  // 换便签回到顶部，固定条上的投影也跟着复位
+  if (els.editorScroll) els.editorScroll.scrollTop = 0;
+  updateEditorStuck();
   els.titleInput.focus();
 }
 
@@ -3597,6 +3602,14 @@ if (els.mdToolbar) {
   window.addEventListener('resize', updateToolbarScrollState);
 }
 
+// 正文滚起来时给固定条一点投影，让人看出上面那条是"钉住"的，而不是内容被切断。
+function updateEditorStuck() {
+  if (!els.editorBar || !els.editorScroll) return;
+  els.editorBar.classList.toggle('is-stuck', els.editorScroll.scrollTop > 4);
+}
+if (els.editorScroll) {
+  els.editorScroll.addEventListener('scroll', updateEditorStuck, { passive: true });
+}
 // 富文本里点工具栏不能让 contenteditable 失焦：一旦失焦选区就没了，加粗/标题会作用不到文字上。
 els.mdToolbar.addEventListener('mousedown', (event) => {
   if (isRichMode() && event.target.closest('[data-md]')) event.preventDefault();

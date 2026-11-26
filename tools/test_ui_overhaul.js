@@ -162,7 +162,7 @@ ok('系统栏安全区：状态栏不再压住顶部标题', () => {
 });
 
 ok('视图切换固定在编辑器顶部，不再藏在横向工具栏里', () => {
-  const head = html.slice(html.indexOf('class="editor-head"'), html.indexOf('class="editor-scroll"'));
+  const head = html.slice(html.indexOf('class="editor-head"'), html.indexOf('class="editor-bar"'));
   ['rich', 'source', 'split', 'view'].forEach((view) => {
     assert.match(head, new RegExp('data-view="' + view + '"'));
   });
@@ -171,6 +171,38 @@ ok('视图切换固定在编辑器顶部，不再藏在横向工具栏里', () =
   assert.doesNotMatch(toolbar, /data-view|预览/);
   assert.match(app, /function applyViewMode\(next, persist = true\)/);
   assert.match(app, /localStorage\.setItem\('nn-view-mode', viewMode\)/);
+});
+
+ok('标题与排版工具栏在滚动区之外，正文滑多远都能点', () => {
+  // 结构：editor-head → editor-bar（标题/分类/工具栏）→ editor-scroll（只有正文）
+  const bar = html.indexOf('class="editor-bar"');
+  const scroll = html.indexOf('class="editor-scroll"');
+  assert.ok(bar > 0 && scroll > bar, 'editor-bar 必须在 editor-scroll 之前');
+  const fixed = html.slice(bar, scroll);
+  assert.match(fixed, /id="titleInput"/);
+  assert.match(fixed, /id="folderSelect"/);
+  assert.match(fixed, /id="mdToolbar"/);
+  const scrolled = html.slice(scroll, html.indexOf('id="attachmentList"'));
+  assert.doesNotMatch(scrolled, /id="titleInput"|id="mdToolbar"/);
+  assert.match(scrolled, /id="richEditor"/);
+  // 样式：固定条不参与压缩，滚动容器自己滚
+  assert.match(css, /\.editor-bar\s*\{[^}]*flex:\s*none/);
+  assert.match(css, /\.editor-scroll\s*\{[^}]*overflow-y:\s*auto/);
+  assert.match(app, /els\.editorBar\.classList\.toggle\('is-stuck'/);
+});
+
+ok('设置长面板在对话框内滚动，标题栏与保存按钮不跑掉', () => {
+  assert.match(css, /\.settings-dialog\s*\{[^}]*display:\s*flex/);
+  assert.match(css, /\.settings-dialog\s*\{[^}]*max-height:\s*calc\(100dvh[^}]*--safe-top/);
+  assert.match(css, /\.settings-shell\s*\{[^}]*flex:\s*1[^}]*min-height:\s*0/);
+  assert.match(css, /\.settings-main\s*\{[^}]*min-height:\s*0/);
+  assert.match(css, /\.settings-body\s*\{[^}]*overflow-y:\s*auto/);
+  assert.match(css, /\.settings-foot\s*\{[^}]*flex:\s*none/);
+  // 手机上不再给 shell 一个 88vh 的软上限（会算不出确定高度 → 内容被裁）
+  const narrow = css.slice(css.indexOf('@media (max-width: 860px)'), css.indexOf('@media (max-width: 760px)'));
+  assert.doesNotMatch(narrow, /max-height:\s*88vh/);
+  assert.match(narrow, /\.settings-shell\s*\{\s*flex-direction:\s*column/);
+  assert.match(narrow, /\.settings-body\s*\{[^}]*var\(--safe-bottom\)/);
 });
 
 ok('分栏预览随输入实时更新，双栏滚动联动', () => {

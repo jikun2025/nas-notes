@@ -267,8 +267,16 @@ mark { background: var(--mark); color: inherit; border-radius: 2px; padding: 0 1
 }
 .view-switch button:hover { background: var(--panel-hover); border-color: transparent; }
 .view-switch button.active { background: var(--panel); color: var(--primary); font-weight: 700; box-shadow: var(--shadow-sm); }
+/* 固定条：标题 / 分类 / 工具栏在滚动容器之外，正文滚动时始终可点。
+   不用 sticky 堆叠：三块各自 sticky 会互相覆盖，且富文本 / 分栏两种布局高度不同。 */
+.editor-bar {
+  flex: none; width: 100%; max-width: 1600px; margin: 0 auto;
+  padding: 6px 26px 0; background: var(--bg);
+  transition: box-shadow .18s ease;
+}
+.editor-bar.is-stuck { box-shadow: 0 8px 14px -12px rgba(16, 22, 40, .45); }
 .editor-scroll { flex: 1; overflow-y: auto; min-height: 0; padding-bottom: var(--safe-bottom); }
-.editor-page { width: 100%; max-width: 1600px; margin: 0 auto; padding: 6px 26px 30px; }
+.editor-page { width: 100%; max-width: 1600px; margin: 0 auto; padding: 0 26px 30px; }
 
 /* 标题区：输入框 + 内嵌字数 + 右侧保存（参考桌面便签应用的版式） */
 .doc-head { display: flex; align-items: center; gap: 10px; padding: 16px 0 10px; }
@@ -470,6 +478,12 @@ dialog.dialog-fallback {
   position: fixed; inset: 0; margin: auto; height: fit-content;
   max-height: 88vh; overflow: auto; z-index: 420;
 }
+/* 设置对话框在降级路径里也不整体滚：滚动交给里面的 .settings-body，
+   否则标题栏与底部按钮会跟着内容一起跑掉 */
+.settings-dialog.dialog-fallback {
+  overflow: hidden; max-height: calc(100vh - 24px - var(--safe-top) - var(--safe-bottom));
+  max-height: calc(100dvh - 24px - var(--safe-top) - var(--safe-bottom));
+}
 body.dialog-open::before {
   content: ''; position: fixed; inset: 0; z-index: 410;
   background: rgba(16, 22, 40, .45);
@@ -503,11 +517,20 @@ dialog input:focus, dialog select:focus { border-color: var(--primary); }
 .settings-sep { border: 0; border-top: 1px solid var(--border); margin: 18px 0 6px; }
 .error-text { color: var(--danger) !important; }
 
-.settings-dialog { width: min(860px, calc(100% - 32px)); padding: 0; overflow: hidden; }
-.settings-shell { display: flex; min-height: 460px; max-height: min(660px, 86vh); }
+/* 设置：对话框高度按可视区收紧，长面板由 .settings-body 自己滚。
+   之前只有 max-height 没有确定高度，列的 flex 子项按内容撑开 → 超出部分被
+   dialog 的 overflow:hidden 直接裁掉（手机上"显示不全"就是这么来的）。 */
+.settings-dialog {
+  width: min(860px, calc(100% - 32px)); padding: 0; overflow: hidden;
+  display: flex; flex-direction: column; height: fit-content;
+  max-height: calc(100vh - 24px - var(--safe-top) - var(--safe-bottom));
+  max-height: calc(100dvh - 24px - var(--safe-top) - var(--safe-bottom));
+}
+.settings-shell { display: flex; flex: 1; min-height: 0; }
 .settings-nav {
   width: 172px; flex: none; padding: 14px 10px; background: var(--panel-soft);
   border-right: 1px solid var(--border); display: flex; flex-direction: column; gap: 4px;
+  overflow-y: auto;
 }
 .settings-nav-item {
   display: flex; align-items: center; gap: 10px; text-align: left;
@@ -517,13 +540,16 @@ dialog input:focus, dialog select:focus { border-color: var(--primary); }
 .settings-nav-item span { width: 18px; text-align: center; font-size: 15px; opacity: .8; }
 .settings-nav-item:hover { background: var(--panel-hover); }
 .settings-nav-item.active { background: var(--panel); border-color: var(--border); color: var(--primary); font-weight: 650; box-shadow: var(--shadow-sm); }
-.settings-main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
-.settings-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--border); }
+.settings-main { flex: 1; min-width: 0; min-height: 0; display: flex; flex-direction: column; }
+.settings-head { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; border-bottom: 1px solid var(--border); flex: none; }
 .settings-head h3 { font-size: 16px; }
 .icon-btn { border: 0; background: transparent; font-size: 20px; line-height: 1; padding: 2px 8px; color: var(--muted); }
-.settings-body { flex: 1; overflow-y: auto; padding: 4px 24px 20px; min-height: 0; }
+.settings-body {
+  flex: 1; overflow-y: auto; padding: 4px 24px 20px; min-height: 0;
+  overscroll-behavior: contain; -webkit-overflow-scrolling: touch;
+}
 .settings-panel > .primary { margin-top: 18px; width: 100%; }
-.settings-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--border); background: var(--panel-soft); }
+.settings-foot { display: flex; justify-content: flex-end; gap: 8px; padding: 12px 20px; border-top: 1px solid var(--border); background: var(--panel-soft); flex: none; }
 .about-card { margin: 14px 0; padding: 18px; border: 1px solid var(--border); border-radius: 12px; }
 .about-card .lock-logo { margin-bottom: 10px; }
 
@@ -598,10 +624,12 @@ button.block { display: block; width: 100%; margin-top: 18px; padding: 11px; }
   .filter-row { display: flex; }
 }
 @media (max-width: 860px) {
-  .settings-shell { flex-direction: column; max-height: 88vh; }
-  .settings-nav { width: 100%; flex-direction: row; overflow-x: auto; border-right: 0; border-bottom: 1px solid var(--border); padding: 8px; }
+  /* 高度仍由 dialog 决定（已扣掉安全区），这里只改排列方向；
+     导航横排不收缩，正文区自己滚，底部保存条固定可见。 */
+  .settings-shell { flex-direction: column; }
+  .settings-nav { width: 100%; flex: none; flex-direction: row; overflow-x: auto; overflow-y: hidden; border-right: 0; border-bottom: 1px solid var(--border); padding: 8px; }
   .settings-nav-item { flex: none; padding: 8px 11px; white-space: nowrap; }
-  .settings-body { padding: 4px 18px 18px; }
+  .settings-body { padding: 4px 18px calc(18px + var(--safe-bottom)); }
 }
 @media (max-width: 760px) {
   .app { display: block; }
@@ -618,8 +646,9 @@ button.block { display: block; width: 100%; margin-top: 18px; padding: 11px; }
   button.back { display: inline-flex; }
   .editor-head { padding: calc(8px + var(--safe-top)) 10px 8px; gap: 6px; }
   .view-switch button { padding: 5px 7px; font-size: 11px; }
-  .editor-page { padding: 4px 12px 26px; }
-  .doc-head { gap: 8px; padding: 12px 0 8px; }
+  .editor-bar { padding: 0 12px; }
+  .editor-page { padding: 0 12px 26px; }
+  .doc-head { gap: 8px; padding: 8px 0 6px; }
   .title-field { padding: 3px 3px 3px 12px; border-radius: 11px; }
   .title-input { font-size: 18px; padding: 6px 0; }
   .title-count { font-size: 10px; padding-right: 8px; }

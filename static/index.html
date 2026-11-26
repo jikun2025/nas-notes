@@ -99,8 +99,8 @@
         </div>
         <button id="deleteBtn" class="danger subtle" type="button" hidden>删除</button>
       </div>
-      <div class="editor-scroll">
-        <div class="editor-page">
+      <!-- 固定条：标题 / 分类 / 排版工具栏。不随正文滚动，长文滑到底也能随手点工具 -->
+      <div class="editor-bar" id="editorBar">
           <!-- 标题区：输入框内嵌字数计数，右侧固定「保存」，对齐桌面便签应用的版式 -->
           <div class="doc-head">
             <div class="title-field">
@@ -165,6 +165,9 @@
               <button type="button" class="md-btn" data-md="hr" title="分隔线">―</button>
             </div>
           </div>
+      </div>
+      <div class="editor-scroll" id="editorScroll">
+        <div class="editor-page">
           <!-- 富文本编辑区：直接编辑渲染后的 DOM（对标 Joplin 移动端的「富文本」模式），
                保存时由 html2md.js 序列化回 Markdown。 -->
           <div class="rich-pane" id="richPane">
