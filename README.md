@@ -49,6 +49,7 @@
 - 前端与 PWA **共用同一份 `static/`**（Gradle 直接把仓库根目录的 `static/` 挂为 assets），代码零复制零改动；壳里仅额外注入一个 `assets/_bridge.js`（劫持 `fetch('/api/*')` → 原生转发、blob 下载 → 原生保存、把 NAS 地址输入框注入「设置 → 同步」面板）。
 - 页面挂在 WebView 虚拟安全域 `https://appassets.androidplatform.net/` 下，`crypto.subtle`、IndexedDB、localStorage 全部可用——**APK 不要求 NAS 提供 HTTPS**；原生层只转发密文，不接触明文。
 - 加载有两层：先走虚拟域（`loadUrl`，origin 最标准）；若主文档没拿到或首屏 2.2 秒后仍是空白，自动降级为「CSS/JS 全部内联进 HTML + `loadDataWithBaseURL`」——有些 WebView/安卓兼容层（例如鸿蒙上的安卓运行环境）不回调 `shouldInterceptRequest`，静态资源会全 404。降级后只有 `/api/` 需要网络，走原生桥。
+- **两条路径都必须注入壳标记与 `_bridge.js`**（Java 里统一走 `injectShellScripts()`）：虚拟域路径下首页是由拦截器返回的，若原样吐 assets 里的 `index.html`，`fetch('/api/*')` 会落到静态资源拦截器上拿到 `502 Bridge Unavailable`，而且 `__NN_SHELL__` 缺失会让同步模式退回「自动」。
 - 真出现白屏时，屏幕上会直接摊开诊断信息（WebView 包名与版本、UA、错误级控制台输出），截图即可定位，不用盲猜。
 - 壳内不注册 Service Worker（资源已内联，没有需要缓存的网络请求）。
 - **离线独立**：App 打开即可用，启动不请求 NAS。首次可点「仅在本机使用」用当前密码建本机加密库（不联网），之后也能正常读写、搜索、看图听录音。
@@ -204,8 +205,8 @@ node tools/test_md_table_fs.js         # Markdown 表格/字号渲染 22 项
 node tools/test_login_ui.js            # 登录页隐藏字段/清库警示/NAS 地址框静态回归 10 项
 node tools/test_ui_overhaul.js         # 三区布局/工具栏两行与手机横滑/标题计数与保存/两级设置/右键菜单/分类清单 14 项
 node tools/test_rich_editor.js         # 富文本模式结构 + HTML→Markdown 往返稳定 11 项（含真实浏览器）
-node tools/test_shell_assets.js        # 安卓壳：内联页/MIME 编码/原生桥/打包配置 6 项
-node tools/test_shell_page.js          # 安卓壳内联页真实浏览器渲染 + 桥接 3 项
+node tools/test_shell_assets.js        # 安卓壳：内联页/MIME 编码/原生桥/打包配置 7 项
+node tools/test_shell_page.js          # 安卓壳内联页真实浏览器渲染 + 桥接 6 项
 node tools/test_offline_mode.js        # 离线独立：本机建库→断网读写→离线解锁→零 /api 请求 29 项（含真实浏览器）
 node tools/test_offline_sync.js        # 离线库→手动连 NAS→密文上云 10 项（含真实浏览器 + 真实 server.py）
 node tools/test_login_server.js        # 登录页 NAS 地址：回填/归一化/登录前落盘 8 项（含真实浏览器）

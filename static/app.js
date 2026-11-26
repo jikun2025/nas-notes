@@ -558,6 +558,12 @@ function fillLockServerInput() {
   if (!els.lockServerInput.value) {
     try { els.lockServerInput.value = api.getServer() || ''; } catch (error) { /* 桥异常按空处理 */ }
   }
+  // 原生对象在、桥接脚本不在：说明 APK 里的 _bridge.js 没注入，所有 /api/ 请求
+  // 都会落到静态资源拦截器上（502 Bridge Unavailable），登录和同步都不可能成功。
+  if (!window.__NnBridge) {
+    setLockServerState('壳内桥接脚本未加载：请求发不出去，请安装最新 APK', 'bad');
+    return;
+  }
   setLockServerState('');
 }
 
@@ -2517,8 +2523,17 @@ if (els.lockServerTestBtn) {
     setLockServerState('正在连接 ' + target + ' …');
     try {
       const response = await fetch('/api/health');
-      if (response.ok) setLockServerState('连接正常 ✓ ' + target, 'ok');
-      else setLockServerState('能连通，但返回 HTTP ' + response.status + '（检查地址或服务状态）', 'bad');
+      if (response.ok) {
+        setLockServerState('连接正常 ✓ ' + target, 'ok');
+      } else {
+        let body = '';
+        try { body = (await response.text()).slice(0, 200); } catch (error) { body = ''; }
+        if (response.status === 502 && /native bridge unavailable/i.test(body)) {
+          setLockServerState('请求被壳拦截了（桥接脚本没加载），请安装最新 APK', 'bad');
+        } else {
+          setLockServerState('能连通，但返回 HTTP ' + response.status + '（检查地址或服务状态）', 'bad');
+        }
+      }
     } catch (error) {
       setLockServerState('连不上 ' + target + '：检查地址、端口与 NAS 是否开机', 'bad');
     } finally {

@@ -45,8 +45,8 @@ node tools/test_md_table_fs.js         # Markdown 表格/字号渲染 22 项
 node tools/test_login_ui.js            # 登录页隐藏字段/清库警示/NAS 地址框 10 项
 node tools/test_ui_overhaul.js         # 三区布局/工具栏两行与手机横滑/标题计数与保存/两级设置/右键菜单/分类清单 14 项
 node tools/test_rich_editor.js         # 富文本模式 + HTML→Markdown 往返 11 项（真实浏览器）
-node tools/test_shell_assets.js        # 安卓壳：内联页/MIME/原生桥/打包配置 6 项
-node tools/test_shell_page.js          # 壳内联页渲染 + 桥接 3 项（真实浏览器）
+node tools/test_shell_assets.js        # 安卓壳：内联页/MIME/原生桥/打包配置 7 项
+node tools/test_shell_page.js          # 壳内联页渲染 + 桥接 6 项（真实浏览器）
 node tools/test_offline_mode.js        # 离线独立：本机建库→断网读写→离线解锁→零 /api 29 项（真实浏览器）
 node tools/test_offline_sync.js        # 离线库→手动连 NAS→密文上云 10 项（真实浏览器 + 真实 server.py）
 node tools/test_login_server.js        # 登录页 NAS 地址回填/归一化/登录前落盘 8 项（真实浏览器）

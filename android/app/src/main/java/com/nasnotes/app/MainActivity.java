@@ -188,10 +188,19 @@ public class MainActivity extends Activity {
                     "<script>" + escapeForInlineScript(code) + "</script>");
         }
         // 壳标记 + 原生桥：必须在 app.js 之前执行，插在 </head> 前
-        html = replaceOnce(html, "</head>",
+        return injectShellScripts(html);
+    }
+
+    /**
+     * 往首页 </head> 前注入壳标记与桥接脚本。
+     * 两条加载路径（虚拟域 intercept 与内联降级）都必须经过这里，
+     * 否则 fetch('/api/*') 会落到静态资源拦截器上得到 502。
+     */
+    private String injectShellScripts(String html) {
+        if (html == null || html.trim().isEmpty()) return "";
+        return replaceOnce(html, "</head>",
                 "<script>window.__NN_SHELL__=true;</script>\n<script>"
                         + escapeForInlineScript(bridgeJs) + "</script>\n</head>");
-        return html;
     }
 
     private static String replaceOnce(String source, String needle, String replacement) {
@@ -270,14 +279,26 @@ public class MainActivity extends Activity {
     private WebResourceResponse assetResponse(String path) {
         String assetName = path.equals("/") || path.equals("/index.html") ? "index.html"
                 : path.replaceFirst("^/+", "");
-        byte[] data = readAssetBytes(assetName);
         String mime;
-        if (data == null) {
-            // SPA 回退：未知路径返回首页（前端路由与 PWA 习惯）
-            data = buildInlinePage().getBytes(StandardCharsets.UTF_8);
+        byte[] data;
+        if ("index.html".equals(assetName)) {
+            // 首页必须注入壳标记与原生桥。assets 里的 index.html 是浏览器版，
+            // 原样返回会让 fetch('/api/*') 直接落到拦截器上（502 Bridge Unavailable），
+            // 而且 __NN_SHELL__ 缺失会让同步模式退回 Web 端的「自动」，变成在线版。
+            String base = readAsset(assetName);
+            data = (base == null || base.trim().isEmpty()
+                    ? buildInlinePage()
+                    : injectShellScripts(base)).getBytes(StandardCharsets.UTF_8);
             mime = "text/html; charset=utf-8";
         } else {
-            mime = mimeOf(assetName);
+            data = readAssetBytes(assetName);
+            if (data == null) {
+                // SPA 回退：未知路径返回首页（前端路由与 PWA 习惯）
+                data = buildInlinePage().getBytes(StandardCharsets.UTF_8);
+                mime = "text/html; charset=utf-8";
+            } else {
+                mime = mimeOf(assetName);
+            }
         }
         // 注意：WebResourceResponse 的第二个参数是字符编码，不是 MIME 子类型。
         // 旧代码把 "text/html; charset=utf-8" 拆成 ("text", "html")，

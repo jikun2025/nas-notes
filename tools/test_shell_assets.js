@@ -63,6 +63,18 @@ ok('原生桥把 headers JSON 解析成对象，status=0 明确按网络失败�
   assert.match(bridge, /window\.fetch\(ASSET_ORIGIN \+ '\/api\/health'\)/);
 });
 
+ok('虚拟域返回首页也注入壳标记与桥（否则 /api/ 会 502 Bridge Unavailable）', () => {
+  const block = java.slice(java.indexOf('private WebResourceResponse assetResponse'),
+    java.indexOf('private byte[] readAssetBytes'));
+  assert.match(block, /"index\.html"\.equals\(assetName\)/);
+  assert.match(block, /injectShellScripts\(base\)/);
+  assert.match(java, /private String injectShellScripts\(String html\)/);
+  // 两条加载路径（拦截器 / 内联降级）必须共用同一个注入函数
+  const inline = java.slice(java.indexOf('private String buildInlinePage'),
+    java.indexOf('private String injectShellScripts'));
+  assert.match(inline, /return injectShellScripts\(html\)/);
+});
+
 ok('APK 打包配置：static 与 main/assets 都进 assets，版本号已递增', () => {
   assert.match(gradle, /assets\.srcDirs\("src\/main\/assets", staticDir\.path\)/);
   const code = /versionCode = (\d+)/.exec(gradle);
