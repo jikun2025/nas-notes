@@ -38,7 +38,7 @@ APK 的 `versionCode` / `versionName` 与此处版本号同步；PWA 只需强�
 
 ## v2.3 — 2026-11-26
 
-手机端 UI 修正（`bd3f48d`）。
+手机端 UI 修正（`a3b303b`）。
 
 - 分类栏在 ≤1180px 不再是 `display:none`，改为可滑出抽屉：列表头「☰」打开，点遮罩/×/Esc/选中分类/进入便签收起；抽屉保留分类清单与底部同步、锁定、设置三个入口。
 - 安卓 `targetSdk 35` 强制 edge-to-edge 导致顶部被状态栏压住：原生把真实 insets 写成 CSS 变量 `--nn-safe-*`，页面在各自头部/底部消费，浏览器直连退化为 `env(safe-area-inset-*)`。
@@ -46,7 +46,7 @@ APK 的 `versionCode` / `versionName` 与此处版本号同步；PWA 只需强�
 
 ## v2.2 — 2026-11-26
 
-修复壳内 502（`4ac8192`）。
+修复壳内 502（`ec35ab7`）。
 
 - 根因：虚拟域加载路径的首页由 `assetResponse()` 原样返回，没有注入 `__NN_SHELL__` 与 `_bridge.js`，`fetch('/api/*')` 落到拦截器得到 `502 Bridge Unavailable`，且 `IS_SHELL=false` 使同步退回「自动」。
 - 抽出 `injectShellScripts()`，两条加载路径共用；前端对「桥接缺失 / 502」给出可操作提示。
@@ -54,7 +54,7 @@ APK 的 `versionCode` / `versionName` 与此处版本号同步；PWA 只需强�
 
 ## v2.1 — 2026-11-26
 
-离线优先与登录页填地址（`a5d372e`）。
+离线优先与登录页填地址（`a279ad3`）。
 
 - APK 变成本机为主库：断网可建库、读写、搜索、离线解锁；同步默认「手动」，点列表顶部状态胶囊才连 NAS。
 - 登录页新增「NAS 地址」（仅壳内显示，可只填 `IP:端口`，带 `/api/health` 测试按钮）；点登录先落盘再发请求，留空沿用上次地址。
@@ -63,7 +63,7 @@ APK 的 `versionCode` / `versionName` 与此处版本号同步；PWA 只需强�
 
 ## v2.0 — 2026-11-26
 
-修复 APK 白屏（`0d7e295`）。
+修复 APK 白屏（`752012c`）。
 
 - `WebResourceResponse` 第二参应为字符编码，之前误传 MIME 子类型，首页被当纯文本 → 白屏。
 - 加载分两层：虚拟域 `loadUrl`，主文档失败或首屏 2.2s 仍空白则降级为全内联页 + `loadDataWithBaseURL`；真白屏时屏幕上摊开诊断信息（WebView 包名版本、UA、控制台错误）。
@@ -72,7 +72,7 @@ APK 的 `versionCode` / `versionName` 与此处版本号同步；PWA 只需强�
 
 ## v1.7 — 2026-11-26
 
-富文本与界面重构（`587e371`、`52c1d38`、`9f362ef`、`b4f7394`、`5830571`）。
+富文本与界面重构（`24bdf2e`、`456f739`、`39fb334`、`ab50eaf`、`2971493`）。
 
 - 新增零依赖富文本（WYSIWYG）模式：`contenteditable` 承载 `md.js` 渲染的 DOM，保存时由 `html2md.js` 序列化回 Markdown；四视图 = 富文本 / 源码 / 分栏 / 预览。
 - Joplin 三区布局；编辑器头部重做（标题框内嵌 `n/200` 计数、「✓ 保存」、分类胶囊）；工具栏桌面两行、手机一行横滑。
@@ -81,6 +81,6 @@ APK 的 `versionCode` / `versionName` 与此处版本号同步；PWA 只需强�
 
 ## v1.0 — 2026-11-25
 
-首个可部署版本（`3fe6b03` 打标签）。
+首个可部署版本（`6950fca` 打标签）。
 
 - 单容器 Python 标准库后端 + 零依赖 PWA；端到端加密（PBKDF2 310k + AES-256-GCM，wkey 包裹）；离线优先 + outbox 队列 + 确定性冲突裁决；图片/录音附件；加密备份导入导出；安卓 WebView 壳。
