@@ -1,9 +1,9 @@
 # 轻签 · NasNotes
 
 [![CI](https://github.com/S-kun/nas-notes/actions/workflows/ci.yml/badge.svg)](https://github.com/S-kun/nas-notes/actions/workflows/ci.yml)
-[![License: MIT](https://img.shields.io/badge/license-MIT-blue.svg)](LICENSE)
+[![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
-后端 Python 3.9+ 标准库 · 前端零依赖 PWA · 端到端加密 · MIT
+后端 Python 3.9+ 标准库 · 前端零依赖 PWA · 端到端加密 · AGPL-3.0
 
 一个为个人 NAS 设计的轻量加密便签：单容器后端 + PWA 前端，浏览器和安卓手机都能读写、离线编辑与同步，全文搜索在本地明文内存中完成。服务端与手机缓存只保存 AES-GCM 密文，不保存明文，也不保存加密口令。
 
