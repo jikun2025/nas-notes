@@ -21,11 +21,11 @@
       <div id="lockServerBlock" class="lock-server" hidden>
         <label for="lockServerInput">NAS 地址</label>
         <div class="lock-server-row">
-          <input id="lockServerInput" type="text" inputmode="url" autocapitalize="none" spellcheck="false" placeholder="http://192.168.5.10:28080">
+          <input id="lockServerInput" type="text" inputmode="url" autocapitalize="none" spellcheck="false" placeholder="https://192.168.5.10:28443">
           <button id="lockServerTestBtn" class="ghost small" type="button">测试</button>
         </div>
         <p id="lockServerState" class="lock-server-state" hidden></p>
-        <p class="muted tiny">填 NAS 的 IP 与端口，例如 192.168.5.10:28080。只有「登录并同步」会连它；留空则沿用上次保存的地址。</p>
+        <p class="muted tiny">填 NAS 的地址，例如 https://192.168.5.10:28443（HTTP 也支持）。只有「登录并同步」会连它；留空则沿用上次保存的地址。</p>
       </div>
       <label for="usernameInput">账户名</label>
       <input id="usernameInput" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="默认 admin">

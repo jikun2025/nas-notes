@@ -594,7 +594,7 @@ function saveServerFromLockInput() {
   if (!raw) return true;          // 留空沿用上次保存的地址
   const value = normalizeServerUrl(raw);
   if (!value) {
-    showLockError('NAS 地址格式不对，例如 http://192.168.5.10:28080');
+    showLockError('NAS 地址格式不对，例如 https://192.168.5.10:28443');
     return false;
   }
   try { api.setServer(value); } catch (error) { console.warn('[NasNotes] setServer failed', error); }
@@ -2715,7 +2715,7 @@ if (els.lockServerTestBtn) {
     const api = nativeServerApi();
     const target = api ? (api.getServer() || '') : location.origin;
     if (!target) {
-      setLockServerState('先填 NAS 地址，例如 192.168.5.10:28080', 'bad');
+      setLockServerState('先填 NAS 地址，例如 192.168.5.10:28443', 'bad');
       return;
     }
     els.lockServerTestBtn.disabled = true;

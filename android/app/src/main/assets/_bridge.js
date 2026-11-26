@@ -8,7 +8,9 @@
   if (window.__NnBridge) return;
   window.__NnBridge = true;
 
-  var ASSET_ORIGIN = 'https://appassets.androidplatform.net';
+  // 虚拟域由壳注入：安卓是 appassets.androidplatform.net，鸿蒙是 nasnotes.local。
+  // 没有注入时退回当前页面 origin，两种壳的常规加载路径都成立。
+  var ASSET_ORIGIN = window.__NN_ASSET_ORIGIN__ || location.origin;
 
   // 部分兼容层的 WebView 没有 fetch：给一个基于 XHR 的最小实现，避免
   // 下面 window.fetch = ... 第一行就抛错导致整座桥失效（登录/同步全废）。
@@ -111,7 +113,10 @@
           resolve(makeResponse(text, status, hdrs));
         };
         try {
-          window.NasNative.apiAsync(cb, method, path, JSON.stringify(headers), body);
+          // 鸿蒙的 ArkWeb 代理方法不收 null 参数，统一传空串；
+          // 安卓原生层用 `body != null && !body.isEmpty()` 判断，空串同样不会发 body。
+          window.NasNative.apiAsync(cb, method, path, JSON.stringify(headers),
+            body == null ? '' : String(body));
         } catch (e) {
           clearTimeout(timer);
           delete window[cb];
@@ -171,7 +176,7 @@
       '<label for="nn-server-input">NAS 服务器地址</label>' +
       '<p class="muted" id="nn-server-hint">本机离线读写不需要它；只有点「立即同步」时才会连这个地址（只传密文）。</p>' +
       '<div id="nn-server-row" style="display:flex;gap:8px;align-items:center;margin:6px 0 14px">' +
-      '<input id="nn-server-input" type="text" placeholder="http://192.168.5.10:28080" style="flex:1;min-width:0;padding:8px;border-radius:8px;border:1px solid #999">' +
+      '<input id="nn-server-input" type="text" placeholder="https://192.168.5.10:28443" style="flex:1;min-width:0;padding:8px;border-radius:8px;border:1px solid #999">' +
       '<button id="nn-server-save" type="button" style="padding:8px 14px;border-radius:8px;border:1px solid #777;background:#e8e8e8;cursor:pointer">保存并测试</button>' +
       '</div>';
 

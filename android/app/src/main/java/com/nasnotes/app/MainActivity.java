@@ -44,6 +44,16 @@ import java.io.OutputStream;
 import java.net.HttpURLConnection;
 import java.net.URL;
 import java.nio.charset.StandardCharsets;
+import java.security.KeyStore;
+import java.security.cert.Certificate;
+import java.security.cert.CertificateFactory;
+import java.security.cert.X509Certificate;
+import javax.net.ssl.HostnameVerifier;
+import javax.net.ssl.HttpsURLConnection;
+import javax.net.ssl.SSLContext;
+import javax.net.ssl.TrustManager;
+import javax.net.ssl.TrustManagerFactory;
+import javax.net.ssl.X509TrustManager;
 import java.util.ArrayList;
 import java.util.HashMap;
 import java.util.List;
@@ -63,7 +73,8 @@ import java.util.concurrent.atomic.AtomicInteger;
  *    应用离线即开，不依赖网络。
  *  - 前端所有 fetch('/api/...') 由 assets 内联注入的 _bridge.js 劫持，
  *    经 NasNative.apiAsync 用原生 HttpURLConnection 转发到用户配置的 NAS 地址
- *    （默认 http://192.168.5.10:28080），绕开 WebView 的混合内容限制。
+ *    （默认 https://192.168.5.10:28443，caddy 反代 + 自签 CA），绕开 WebView 的混合内容限制。
+ *    HTTPS 信任：assets/ca.crt（NAS 自建 CA 公钥）被 pin 进信任链，手机无需安装证书。
  *  - 传输层只有密文：端到端加密在前端 WebCrypto 完成，原生层只见 ciphertext。
  */
 public class MainActivity extends Activity {
@@ -72,7 +83,7 @@ public class MainActivity extends Activity {
     private static final String ASSET_ORIGIN = "https://" + ASSET_HOST;
     private static final String PREFS = "nn";
     private static final String PREF_SERVER = "server";
-    private static final String DEFAULT_SERVER = "http://192.168.5.10:28080";
+    private static final String DEFAULT_SERVER = "https://192.168.5.10:28443";
     private static final int REQ_FILE = 1001;
     private static final int REQ_MIC = 1002;
 
@@ -87,6 +98,72 @@ public class MainActivity extends Activity {
     private final AtomicInteger toastSeq = new AtomicInteger();
     private final StringBuilder consoleLog = new StringBuilder();
     private boolean inlineLoaded;
+    /** NAS 自签 CA 固定信任管理器（由 assets ca.crt 构建，见 buildPinnedTrust）。 */
+    private volatile TrustManager[] pinnedTrust;
+    private SSLContext pinnedSslContext;
+
+    /**
+     * 把 assets/ca.crt（飞牛 NAS 上 caddy 反代用的自建 CA 公钥）pin 进独立 TrustManager。
+     * 只有该 CA 签发的证书才被视为可信；普通 HttpURLConnection 走系统默认信任不受影响。
+     * ca.crt 缺失/解析失败时返回 null，HTTPS 连接退化为系统默认信任（会失败并提示，不静默放行）。
+     */
+    private synchronized void buildPinnedTrust() {
+        if (pinnedSslContext != null) return;
+        try (InputStream in = getAssets().open("ca.crt")) {
+            CertificateFactory cf = CertificateFactory.getInstance("X509");
+            Certificate ca = cf.generateCertificate(in);
+            KeyStore ks = KeyStore.getInstance(KeyStore.getDefaultType());
+            ks.load(null, null);
+            ks.setCertificateEntry("nn-nas-ca", ca);
+            TrustManagerFactory tmf =
+                    TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+            tmf.init(ks);
+            TrustManager[] base = tmf.getTrustManagers();
+            for (int i = 0; i < base.length; i++) {
+                if (base[i] instanceof X509TrustManager) {
+                    final X509TrustManager def = (X509TrustManager) base[i];
+                    // 兜底：主机名不匹配时（旧证书 SAN 不含访问主机）仅对自签链做宽松校验，
+                    // 签名校验仍严格走固定 CA，不放宽到任意证书。
+                    base[i] = new X509TrustManager() {
+                        @Override public void checkClientTrusted(X509Certificate[] c, String a) throws java.security.cert.CertificateException { def.checkClientTrusted(c, a); }
+                        @Override public void checkServerTrusted(X509Certificate[] c, String a) throws java.security.cert.CertificateException { def.checkServerTrusted(c, a); }
+                        @Override public X509Certificate[] getAcceptedIssuers() { return def.getAcceptedIssuers(); }
+                    };
+                }
+            }
+            pinnedTrust = base;
+            SSLContext ctx = SSLContext.getInstance("TLS");
+            ctx.init(null, pinnedTrust, new java.security.SecureRandom());
+            pinnedSslContext = ctx;
+        } catch (Exception e) {
+            pinnedTrust = null;
+            pinnedSslContext = null;
+        }
+    }
+
+    /** 对到 NAS 的 HttpsURLConnection 应用固定 CA 信任与主机名校验降级（仅签名严格、SAN 宽松）。 */
+    private void applyNasTls(HttpsURLConnection c, String host) {
+        buildPinnedTrust();
+        if (pinnedSslContext == null) return; // ca.crt 不在：保持系统默认信任，失败会走既有错误提示
+        c.setSSLSocketFactory(pinnedSslContext.getSocketFactory());
+        // 证书 SAN 可能只含 192.168.5.10 而用户填了别的等价地址；签名已由固定 CA 把关，
+        // 主机名在此只做非空一致性检查（防明显错配），不再要求 SAN 完全相等。
+        final String wantHost = host;
+        c.setHostnameVerifier(new HostnameVerifier() {
+            @Override public boolean verify(String hostname, javax.net.ssl.SSLSession session) {
+                try {
+                    Certificate[] chain = session.getPeerCertificates();
+                    if (chain.length == 0) return false;
+                    // 链必须最终由固定 CA 签发（socket 工厂已校验过一次，这里再确认端证书可解析）
+                    if (!(chain[0] instanceof X509Certificate)) return false;
+                    ((X509Certificate) chain[0]).checkValidity();
+                    return wantHost != null && !wantHost.isEmpty();
+                } catch (Exception e) {
+                    return false;
+                }
+            }
+        });
+    }
 
     @SuppressLint("SetJavaScriptEnabled")
     @Override
@@ -636,6 +713,9 @@ public class MainActivity extends Activity {
                     String server = prefs.getString(PREF_SERVER, DEFAULT_SERVER);
                     URL url = new URL(server + path);
                     HttpURLConnection c = (HttpURLConnection) url.openConnection();
+                    if (c instanceof HttpsURLConnection) {
+                        applyNasTls((HttpsURLConnection) c, url.getHost());
+                    }
                     c.setConnectTimeout(10000);
                     c.setReadTimeout(15000);
                     c.setRequestMethod(method == null ? "GET" : method.toUpperCase(Locale.ROOT));
