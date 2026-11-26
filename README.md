@@ -1,6 +1,6 @@
 # 轻签 · NasNotes
 
-[![CI](https://github.com/S-kun/nas-notes/actions/workflows/ci.yml/badge.svg)](https://github.com/S-kun/nas-notes/actions/workflows/ci.yml)
+[![CI](https://github.com/jikun2025/nas-notes/actions/workflows/ci.yml/badge.svg)](https://github.com/jikun2025/nas-notes/actions/workflows/ci.yml)
 [![License: AGPL v3](https://img.shields.io/badge/license-AGPL--3.0-blue.svg)](LICENSE)
 
 后端 Python 3.9+ 标准库 · 前端零依赖 PWA · 端到端加密 · AGPL-3.0
@@ -27,25 +27,25 @@
 直连仓库：
 
 ```bash
-git clone https://github.com/S-kun/nas-notes.git
+git clone https://github.com/jikun2025/nas-notes.git
 ```
 
 国内网络可用加速前缀或镜像（前缀方式把原地址整段接在后面，任选一个能通的）：
 
 ```bash
 # 加速前缀（推荐，跟随官方仓库，不用等镜像同步）
-git clone https://ghfast.top/https://github.com/S-kun/nas-notes.git
-git clone https://ghproxy.net/https://github.com/S-kun/nas-notes.git
-git clone https://gh-proxy.com/https://github.com/S-kun/nas-notes.git
+git clone https://ghfast.top/https://github.com/jikun2025/nas-notes.git
+git clone https://ghproxy.net/https://github.com/jikun2025/nas-notes.git
+git clone https://gh-proxy.com/https://github.com/jikun2025/nas-notes.git
 
 # 镜像站
-git clone https://github.kkgithub.com/S-kun/nas-notes.git
+git clone https://github.kkgithub.com/jikun2025/nas-notes.git
 ```
 
-安卓 APK 挂在 Releases：从 [Releases](https://github.com/S-kun/nas-notes/releases) 下载 `nas-notes-shell-v2.6.apk`；下载慢时同样加前缀：
+安卓 APK 挂在 Releases：从 [Releases](https://github.com/jikun2025/nas-notes/releases) 下载 `nas-notes-shell-v2.6.apk`；下载慢时同样加前缀：
 
 ```
-https://ghfast.top/https://github.com/S-kun/nas-notes/releases/download/v2.6/nas-notes-shell-v2.6.apk
+https://ghfast.top/https://github.com/jikun2025/nas-notes/releases/download/v2.6/nas-notes-shell-v2.6.apk
 ```
 
 > APK 登录页预填的地址只是示例（作者环境），首次登录请改成你自己的 `NAS_IP:端口`；填过一次会存进原生配置。更推荐从源码自己 `gradle assembleRelease` 打包，签名在你手里。
