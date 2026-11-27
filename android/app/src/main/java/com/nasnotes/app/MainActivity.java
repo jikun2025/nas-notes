@@ -84,6 +84,22 @@ public class MainActivity extends Activity {
     private static final String PREFS = "nn";
     private static final String PREF_SERVER = "server";
     private static final String DEFAULT_SERVER = "https://192.168.5.10:28443";
+
+    /**
+     * 旧版（≤2.6）默认存的是 http://192.168.5.10:28080；NAS 已把 28080 收紧为仅回环，
+     * 手机上连必失败。读取时把这一精确旧值一次性升级到 HTTPS 反代地址；
+     * 用户自填的其他 http 地址不动（尊重选择）。
+     */
+    private String effectiveServer() {
+        String server = prefs.getString(PREF_SERVER, DEFAULT_SERVER);
+        if (server == null || server.trim().isEmpty()) return DEFAULT_SERVER;
+        server = server.trim();
+        if (server.equals("http://192.168.5.10:28080")) {
+            prefs.edit().putString(PREF_SERVER, DEFAULT_SERVER).apply();
+            return DEFAULT_SERVER;
+        }
+        return server;
+    }
     private static final int REQ_FILE = 1001;
     private static final int REQ_MIC = 1002;
 
@@ -525,7 +541,7 @@ public class MainActivity extends Activity {
                 return assetResponse(path);
             }
             // 其余外部域名：壳应用只允许访问用户配置的 NAS origin
-            String server = prefs.getString(PREF_SERVER, DEFAULT_SERVER);
+            String server = effectiveServer();
             try {
                 String allowHost = new URL(server).getHost();
                 if (allowHost != null && allowHost.equals(host)) return null;
@@ -686,7 +702,7 @@ public class MainActivity extends Activity {
 
         @JavascriptInterface
         public String getServer() {
-            return prefs.getString(PREF_SERVER, DEFAULT_SERVER);
+            return effectiveServer();
         }
 
         @JavascriptInterface
@@ -710,7 +726,7 @@ public class MainActivity extends Activity {
                 Map<String, String> respHeaders = new HashMap<>();
                 String text;
                 try {
-                    String server = prefs.getString(PREF_SERVER, DEFAULT_SERVER);
+                    String server = effectiveServer();
                     URL url = new URL(server + path);
                     HttpURLConnection c = (HttpURLConnection) url.openConnection();
                     if (c instanceof HttpsURLConnection) {

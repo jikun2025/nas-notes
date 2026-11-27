@@ -2,6 +2,9 @@
 # 监听宿主 28443 → 内网 nas-notes:8080；证书为自签 CA 签发的 10 年长期证书（SAN: 192.168.5.10）
 {
 	admin off
+	log {
+		output file /config/access.log
+	}
 }
 
 :28443 {
@@ -10,6 +13,6 @@
 		header_up X-Forwarded-Proto https
 	}
 	encode gzip
-	header Strict-Transport-Security "max-age=31536000"
+	# 注意：自签证书下绝不加 HSTS——浏览器一旦记下，就会硬拒绝并隐藏「继续访问」按钮
 	header X-Content-Type-Options "nosniff"
 }

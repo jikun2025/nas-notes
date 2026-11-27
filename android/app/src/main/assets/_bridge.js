@@ -188,6 +188,7 @@
     inp.value = window.NasNative.getServer() || '';
     btn.addEventListener('click', function () {
       var v = (inp.value || '').trim().replace(/\/+$/, '');
+      if (v && !/^https?:\/\//i.test(v)) v = 'https://' + v;
       if (!/^https?:\/\/[^\/\s]+$/.test(v)) { toast('地址格式：http(s)://IP或域名[:端口]'); return; }
       window.NasNative.setServer(v);
       var label = document.getElementById('syncServerAddr');

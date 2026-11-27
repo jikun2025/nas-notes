@@ -71,9 +71,9 @@ ok('登录前先把 NAS 地址写进原生配置，再发登录请求', () => {
   assert.ok(loginAt > saveAt, '保存地址必须早于登录请求');
 });
 
-ok('NAS 地址归一化：补 http://、去尾斜杠、拒绝带路径', () => {
+ok('NAS 地址归一化：补 https://、去尾斜杠、拒绝带路径', () => {
   const block = app.slice(app.indexOf('function normalizeServerUrl'), app.indexOf('function fillLockServerInput'));
-  assert.match(block, /value = 'http:\/\/' \+ value/);
+  assert.match(block, /value = 'https:\/\/' \+ value/);
   assert.match(block, /replace\(\/\\\/\+\$\/, ''\)/);
   assert.match(block, /\^https\?/);
 });

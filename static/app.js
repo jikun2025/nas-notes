@@ -552,11 +552,11 @@ function nativeServerApi() {
   return api && typeof api.getServer === 'function' && typeof api.setServer === 'function' ? api : null;
 }
 
-// 允许只写 IP、IP:端口；统一补 http:// 并去掉尾部斜杠。非法返回空串。
+// 允许只写 IP、IP:端口；统一补 https://（NAS 已切 HTTPS 反代）并去掉尾部斜杠。非法返回空串。
 function normalizeServerUrl(raw) {
   let value = String(raw || '').trim();
   if (!value) return '';
-  if (!/^https?:\/\//i.test(value)) value = 'http://' + value;
+  if (!/^https?:\/\//i.test(value)) value = 'https://' + value;
   value = value.replace(/\/+$/, '');
   return /^https?:\/\/[^\s/?#]+$/i.test(value) ? value : '';
 }

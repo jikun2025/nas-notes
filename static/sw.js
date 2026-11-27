@@ -1,4 +1,4 @@
-const CACHE = 'nas-notes-v29';
+const CACHE = 'nas-notes-v30';
 const SHELL = [
   '/',
   '/index.html',
