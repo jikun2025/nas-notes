@@ -134,6 +134,14 @@ ok('麦克风：安装包声明 + 原生运行时申请 + 网页层放行，三�
   assert.match(rawApp, /String\(api\.requestMic\(\) \|\| ''\)/);
   assert.match(rawApp, /function watchMicThenRecord\(\)/);
   assert.match(rawApp, /async function startRecording\(\)/);
+  // 5) onPermissionRequest 必须按 ArkWeb 的真实资源名放行。
+  //    实测 API 26 的 getAccessibleResource() 返回 ["TYPE_AUDIO_CAPTURE"]，
+  //    不是 'ohos.permission.MICROPHONE'，也不是 Android 的 RESOURCE_AUDIO_CAPTURE。
+  //    名字写错就永远匹配不上、走 deny()，表现为点录音立刻「无法录音：Permission denied」
+  //    ——v3.0 首版正是这么错的，靠模拟器实测才发现。
+  assert.match(index, /TYPE_AUDIO_CAPTURE/);
+  assert.match(index, /onPermissionRequest\(\(event\)/);
+  assert.match(index, /indexOf\('AUDIO_CAPTURE'\) >= 0/);
   // 手势约束：ArkWeb 要求 getUserMedia 在点击的同步窗口内发起，
   // startRecording 里 getUserMedia 之前不能出现任何 await（会吃掉激活态）
   const recHead = rawApp.slice(rawApp.indexOf('async function startRecording()'), rawApp.indexOf('mediaRecorder.onstop'));

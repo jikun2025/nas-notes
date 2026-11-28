@@ -3,6 +3,16 @@
 轻签（NasNotes）的本地版本史。每个版本对应一次提交，并在 git 里打了同名附注标签（`git tag -n` 可看摘要）。
 APK 的 `versionCode` / `versionName` 与此处版本号同步；PWA 只需强刷让 Service Worker 换缓存。
 
+## v3.1 — 2026-11-28
+
+鸿蒙壳录音权限修复：v3.0 首版把 `onPermissionRequest` 的放行名单写错了资源名，真机/模拟器上点录音仍会立刻失败。
+
+- **根因**：ArkWeb 的 `event.request.getAccessibleResource()` 在 API 26 返回 `["TYPE_AUDIO_CAPTURE"]`，而代码按 `ohos.permission.MICROPHONE` 比对，永远不匹配 → 走 `deny()` → `getUserMedia` 抛 `NotAllowedError`（界面提示「无法录音：Permission denied」）。系统层权限其实是给了的：桥 `requestMic()` 实测已返回 `granted`，`checkAccessTokenSync` 为 0。
+- **修法**：`MIC` 常量改为 `TYPE_AUDIO_CAPTURE`，判断同时接受包含 `AUDIO_CAPTURE` 的资源名；`methodList`、桥方法、前端手势时窗逻辑均不变。
+- **模拟器实测**（Pura X View / HarmonyOS 7.0.0.107 / API 26）：修前 `permission allow=0` + `getUserMedia` 立即失败；修后录 4 s 生成 13 KB 加密音频附件、可内联播放、强杀重启后仍在（便签列表显示 🎤 2）。
+- **回归**：`tools/test_harmony_shell.js` 新增断言——必须在 `onPermissionRequest` 里出现 `TYPE_AUDIO_CAPTURE`，防止再退回按权限名比对。
+- 版本：鸿蒙 HAP `3000001 / 3.1.0`；APK 与 SW 无改动（仍 `30 / 3.0`、`nas-notes-v32`）。
+
 ## v3.0 — 2026-11-28
 
 应用内不再有密码（门禁交给系统锁屏/指纹/人脸）、连接服务器集中到设置、随包零内网 IP；并修复华为上架审核报的「录音失败」「设置弹窗关不掉」。
