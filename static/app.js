@@ -90,6 +90,11 @@ const els = {
   acctConfirmInput: document.getElementById('acctConfirmInput'),
   acctError: document.getElementById('acctError'),
   saveAccount: document.getElementById('saveAccount'),
+  firstRunDialog: document.getElementById('firstRunDialog'),
+  firstRunPass: document.getElementById('firstRunPass'),
+  firstRunConfirm: document.getElementById('firstRunConfirm'),
+  firstRunError: document.getElementById('firstRunError'),
+  firstRunSave: document.getElementById('firstRunSave'),
   deviceInput: document.getElementById('deviceInput'),
   syncMode: document.getElementById('syncMode'),
   syncInterval: document.getElementById('syncInterval'),
@@ -697,13 +702,7 @@ function handleSessionExpired() {
     updateSyncUI();
     return;
   }
-  // 壳内免密形态：会话过期不该把用户踢回锁屏（应用内本来没有密码可输），
-  // 明文与库仍在内存，只是同步会失败——引导去「设置 → 连接服务器」重新连接。
-  if (IS_SHELL && DEVICE_KEY_OK) {
-    toast('服务器会话已失效：请到「设置 → 连接服务器」重新连接');
-    updateSyncUI();
-    return;
-  }
+  // 壳内口令门禁：没有解锁就回锁屏，别把明文界面留在前台。
   if (cryptoKey) lockApp();
   else showLockScreen(vaultMeta && vaultMeta.salt ? 'unlock' : 'init');
   showLockError('会话已过期，请重新登录');
@@ -842,22 +841,8 @@ async function unlockWithDeviceSecret() {
   return key;
 }
 
-// 旧壳（v2.9 及以前）建的「密码包裹」本机库升级到免密形态：
-// 用旧密码解出 wkey 后，本机包裹层换成设备密钥，其余字段不动。
-// 还没有 serverWrapped——用户之后在「设置 → 连接服务器」里填账户密码时补上。
-async function migrateLocalVaultToDevice() {
-  if (!wkeyBytes || !vaultMeta || !vaultMeta.salt) throw new Error('vault not loaded');
-  const deviceKey = await deviceWrapKey(vaultMeta.salt);
-  vaultMeta = Object.assign({}, vaultMeta, {
-    wrapped: await wrapVault(deviceKey, wkeyBytes),
-    dev: true
-  });
-  await saveLocalVault(vaultMeta);
-  devSecretMemo = nativeDeviceSecret();
-}
-
-// 完全本机的加密库：本机生成 salt 与 wkey。opts.dev=true（壳内）用原生设备密钥
-// 包裹并打 dev 标记（免密直入）；PWA「仅在本机使用」仍用密码包裹。
+// 完全本机的加密库：本机生成 salt 与 wkey。默认由账户口令包裹（门禁形态）；
+// opts.dev 仅用于 v3.0/v3.1 遗留的设备密钥库（读到后会立刻迁移成口令库）。
 // 不写服务端，不需要登录；之后连接 NAS 时再把「账户密码包裹层」推上去。
 async function createLocalVault(passphrase, opts) {
   const options = opts || {};
@@ -874,12 +859,47 @@ async function createLocalVault(passphrase, opts) {
     local_only: true
   };
   if (options.dev) meta.dev = true;
+  if (options.mustChange) meta.mustChange = true;
+  if (options.localAccount) meta.localAccount = String(options.localAccount);
   await saveLocalVault(meta);
   vaultMeta = meta;
   wkeyBytes = wkey;
   if (options.dev) devSecretMemo = nativeDeviceSecret();
   offlineReady = true;
   return importWkey(wkey);
+}
+
+// v3.0/v3.1 的设备密钥库（免密形态）升级为「口令门禁」形态：
+// 设备密钥只在这里用一次，解出 wkey 后立刻用口令重包裹，dev 标记随之移除。
+// 已连服务器（有 serverWrapped）的装机沿用原生保管的服务器口令，避免用户被要求改两次；
+// 纯本机装机退到默认口令 admin，由调用方触发一次性强制改密。
+async function migrateDeviceVaultToPassword() {
+  if (!wkeyBytes || !vaultMeta || !vaultMeta.salt) throw new Error('vault not loaded');
+  const saved = readNativeServerAccount();
+  const password = (saved && saved.password) ? saved.password : DEFAULT_PASSWORD;
+  const layer = await buildServerWrapped(password);
+  const next = Object.assign({}, vaultMeta, {
+    wrapped: layer,
+    localAccount: (saved && saved.username) ? saved.username : (vaultMeta.localAccount || DEFAULT_USERNAME)
+  });
+  delete next.dev;
+  if (next.serverWrapped) next.serverWrapped = layer;   // 口令统一：两层同步重包裹
+  next.mustChange = password === DEFAULT_PASSWORD;
+  vaultMeta = next;
+  await saveLocalVault(vaultMeta);
+  return { mustChange: Boolean(next.mustChange) };
+}
+
+// 设置/修改本机口令：wkey 与便签密文不变，只换包裹层。
+// 已连服务器时同一口令重包裹 serverWrapped，保证两层仍可用同一个密码解开。
+async function setLocalPassword(newPassword) {
+  if (!wkeyBytes || !vaultMeta || !vaultMeta.salt) throw new Error('vault not loaded');
+  const layer = await buildServerWrapped(newPassword);
+  const next = Object.assign({}, vaultMeta, { wrapped: layer, mustChange: false });
+  delete next.dev;
+  if (next.serverWrapped) next.serverWrapped = layer;
+  vaultMeta = next;
+  await saveLocalVault(vaultMeta);
 }
 
 // 上行用的「账户密码包裹层」：同一 salt、PBKDF2(账户密码) 包裹当前 wkey。
@@ -889,19 +909,20 @@ async function buildServerWrapped(password) {
   return wrapVault(wrapKey, wkeyBytes);
 }
 
-// 连接成功后的收尾：本机 wrapped 换成设备密钥包裹（壳内），并记下账户密码包裹层。
-// salt 只有一个（本机与服务器共用），改密/接管远端库时整体重包裹。
-async function rekeyLocalVaultForDevice(password) {
+// 连接成功后的收尾：本机包裹层与服务器层统一用账户口令重包裹（salt 只有一个）。
+// 之后本机解锁密码 = 服务器账户密码，用户只需要记一个。
+async function rekeyLocalVaultForPassword(password) {
   if (!wkeyBytes || !vaultMeta || !vaultMeta.salt) throw new Error('vault not loaded');
-  const deviceKey = await deviceWrapKey(vaultMeta.salt);
-  vaultMeta = Object.assign({}, vaultMeta, {
-    wrapped: await wrapVault(deviceKey, wkeyBytes),
-    dev: true,
-    serverWrapped: await buildServerWrapped(password),
-    local_only: false
+  const layer = await buildServerWrapped(password);
+  const next = Object.assign({}, vaultMeta, {
+    wrapped: layer,
+    serverWrapped: layer,
+    local_only: false,
+    mustChange: false
   });
+  delete next.dev;
+  vaultMeta = next;
   await saveLocalVault(vaultMeta);
-  devSecretMemo = nativeDeviceSecret();
 }
 
 // 把「账户密码包裹层」推到服务器（远端还没有库时）。notes 密文用 wkey，
@@ -1483,16 +1504,11 @@ async function idbPutMany(storeName, values) {
 
 // ---------- 锁屏与加密库 ----------
 const DEFAULT_USERNAME = 'admin';
+// 首次使用自动建库用的默认口令：进入后强制修改，绝不允许长期停留在这个值。
+const DEFAULT_PASSWORD = 'admin';
 
 function showLockScreen(mode) {
   initMode = mode === 'init';
-  // 壳内免密形态（新壳 + 设备密钥可用）：正常情况根本不走锁屏（boot 直接解锁）。
-  // 只有兜底面板会出现：旧密码库迁移（migrate）、设备密钥解不开（broken）、启动异常（bootfail）。
-  if (IS_SHELL && DEVICE_KEY_OK) {
-    showShellGate();
-    return;
-  }
-  // 旧壳（没有设备密钥能力）：仍走密码流程，保持 v2.9 语义。
   // 壳内本机优先：还没配 NAS 地址时，首次进入就是「设置本机密码」，
   // 不是「登录 NAS」。老装机（已配地址）维持原语义。
   const localInit = IS_SHELL && LOCAL_FIRST && initMode;
@@ -1502,8 +1518,8 @@ function showLockScreen(mode) {
     els.lockHint.textContent = '第一次使用：设置一个本机密码（至少 8 位）。便签只加密保存在这台设备上，全程不联网；需要多端同步时，再在「设置 → 连接服务器」里连接 NAS。';
   } else if (IS_SHELL) {
     els.lockHint.textContent = initMode
-      ? '输入密码解锁本机库；也可以用它登录已配置的 NAS。需要同步时点列表顶部的同步状态按钮。'
-      : '输入密码解锁本机库即可离线读写；需要同步时点列表顶部的同步状态按钮。';
+      ? '输入本机账户密码解锁；也可以用它登录已配置的 NAS。需要同步时点列表顶部的同步状态按钮。'
+      : '输入本机账户密码解锁（账户默认 admin）。需要同步时点列表顶部的同步状态按钮。';
   } else {
     els.lockHint.textContent = initMode
       ? '第一次使用：填好 NAS 地址，再输入 NAS 的账户和密码登录并同步；暂时不连 NAS 就用下面的「仅在本机使用」（默认 admin / admin）。'
@@ -1543,18 +1559,16 @@ function showLockError(message) {
 }
 
 // ---------- 壳内兜底锁屏（免密形态专用） ----------
-// 正常情况 boot 会用设备密钥直接解锁，不进锁屏。只有三种情况出现这里：
-//   migrate  —— 本机库是旧壳（v2.9 及以前）用密码创建的，输入一次旧密码迁移成设备密钥包裹
-//   broken   —— 设备密钥解不开本机库（清除过应用数据/换机），只能清空重建
-//   bootfail —— boot 自动解锁过程异常
-// 面板里没有账户名/地址/确认框：那些都在「设置 → 连接服务器」里。
+// 只有两种情况落到这里（正常启动一律走锁屏输密码）：
+//   broken   —— 本机加密库解不开（清除过应用数据/换机/旧设备密钥丢失），只能清空重建
+//   bootfail —— 建库或启动过程异常
+// 面板里不提供密码输入：解不开就是解不开，硬试没有意义。
 function showShellGate() {
   els.lockScreen.hidden = false;
   els.lockTitle.textContent = '轻签 · 本机便签';
-  const migrate = shellGateMode === 'migrate';
-  els.lockHint.textContent = migrate
-    ? '这台设备上的便签库是旧版本用密码创建的。输入当初设置的本机密码完成一次性迁移；之后便签库由设备密钥自动保护，开门禁（锁屏/指纹/人脸）后直接进入，不再需要应用密码。'
-    : '本机便签库无法自动解锁（通常是清除过应用数据或更换了设备，设备密钥已丢）。如果 NAS 上有备份，连接服务器后会自动同步回来；也可以清空本机重建一个空库。';
+  els.lockHint.textContent = shellGateMode === 'bootfail'
+    ? '本机便签初始化失败。请先重启应用；若反复失败，可以清空本机数据后重建一个空库（NAS 上的数据不受影响）。'
+    : '本机加密库解不开（通常是清除过应用数据或更换了设备）。如果之前在 NAS 上有该库的备份，清空重建后连接服务器即可同步回来。';
   if (els.lockServerBlock) els.lockServerBlock.hidden = true;
   if (els.usernameLabel) els.usernameLabel.hidden = true;
   els.usernameInput.hidden = true;
@@ -1562,77 +1576,98 @@ function showShellGate() {
   els.confirmInput.hidden = true;
   els.lockLocalBtn.hidden = true;
   if (els.lockOfflineNote) els.lockOfflineNote.hidden = true;
-  els.passphraseLabel.hidden = !migrate;
-  els.passphraseInput.hidden = !migrate;
-  els.unlockBtn.hidden = !migrate;
-  els.unlockBtn.textContent = '迁移并进入';
-  els.resetVaultBtn.hidden = migrate;
+  els.passphraseLabel.hidden = true;
+  els.passphraseInput.hidden = true;
+  els.passphraseInput.value = '';
+  els.unlockBtn.hidden = true;
+  els.resetVaultBtn.hidden = false;
   els.resetPanel.hidden = true;
   els.resetConfirmInput.value = '';
   els.lockError.hidden = true;
-  if (migrate) els.passphraseInput.value = '';
   offlineReady = Boolean(vaultMeta && vaultMeta.wrapped);
-  setBadge(migrate ? '需要旧密码' : '无法解锁');
-  if (migrate) setTimeout(() => els.passphraseInput.focus(), 0);
+  setBadge('无法解锁');
 }
 
-// 壳内兜底面板的「迁移并进入」：旧密码解本机库 → 立刻换成设备密钥包裹。
-async function handleShellGateUnlock() {
-  if (shellGateMode !== 'migrate') return;
-  const passphrase = els.passphraseInput.value;
-  els.lockError.hidden = true;
-  if (!passphrase) return showLockError('请输入旧版本机密码');
-  els.unlockBtn.disabled = true;
-  try {
-    const localKey = await unlockWithLocalVault(passphrase);
-    if (!localKey) {
-      shellGateMode = 'broken';
-      showShellGate();
-      showLockError('这个密码解不开本机库。可在下方「忘记密码？」清空重建（NAS 上的数据不受影响）。');
+// 壳内启动：口令门禁形态。
+// 1) 没有库 → 用默认口令建库并进入，随后强制改密；
+// 2) v3.0/v3.1 的设备密钥库 → 静默迁移为口令库（已连服务器则沿用服务器保管的口令）；
+// 3) 其余 → 正常本机锁屏，输入本机账户密码解锁。
+async function shellBoot() {
+  shellGateMode = '';
+  if (!(vaultMeta && vaultMeta.salt && vaultMeta.wrapped)) {
+    if (!DEVICE_KEY_OK) {
+      // 旧壳（没有设备密钥能力）：保留 v2.9 的「自己设本机密码」流程，不代建默认口令库。
+      showLockScreen('init');
       return;
     }
-    await migrateLocalVaultToDevice();
-    accountName = '本机';
-    await afterUnlock(localKey);
-    toast('已迁移为设备密钥保护：以后解锁手机后直接进入');
-  } catch (error) {
-    showLockError('密码不正确：本机库只能用它当初设置的密码解锁');
-  } finally {
-    els.unlockBtn.disabled = false;
+    try {
+      const key = await createLocalVault(DEFAULT_PASSWORD, {
+        mustChange: true, localAccount: DEFAULT_USERNAME
+      });
+      accountName = DEFAULT_USERNAME;
+      await afterUnlock(key);
+      toast('已创建本机加密库：默认口令 ' + DEFAULT_PASSWORD + '，请立即修改');
+      return;
+    } catch (error) {
+      console.warn('[NasNotes] create local vault failed', error);
+      shellGateMode = 'bootfail';
+      showShellGate();
+      return;
+    }
   }
+  if (vaultMeta.dev) {
+    try {
+      const key = await unlockWithDeviceSecret();
+      const migrated = await migrateDeviceVaultToPassword();
+      accountName = vaultMeta.localAccount || DEFAULT_USERNAME;
+      await afterUnlock(key);
+      if (migrated.mustChange) {
+        toast('本机库已改为密码保护：默认口令 ' + DEFAULT_PASSWORD + '，请立即修改');
+      }
+      return;
+    } catch (error) {
+      console.warn('[NasNotes] migrate device vault failed', error);
+      shellGateMode = 'broken';
+      showShellGate();
+      return;
+    }
+  }
+  offlineReady = true;
+  showLockScreen('unlock');
 }
 
-// 壳内免密启动：设备密钥直接解开本机库；没有库就现建一个设备密钥保护的库。
-// 只有旧密码库（migrate）、解不开（broken）、异常（bootfail）才落到兜底锁屏。
-async function shellAutoUnlock() {
-  shellGateMode = '';
-  let key = null;
+// 默认口令强制改密：不提供「稍后」——留着 admin 等于没有门禁。
+let firstRunPromptShown = false;
+function promptInitialPasswordChange() {
+  if (firstRunPromptShown || !els.firstRunDialog) return;
+  if (!vaultMeta || !vaultMeta.mustChange) return;
+  firstRunPromptShown = true;
+  els.firstRunPass.value = '';
+  els.firstRunConfirm.value = '';
+  els.firstRunError.hidden = true;
+  openDialog(els.firstRunDialog);
+  setTimeout(() => els.firstRunPass.focus(), 60);
+}
+
+async function submitInitialPassword() {
+  const pass = els.firstRunPass.value;
+  const confirm = els.firstRunConfirm.value;
+  const fail = (message) => {
+    els.firstRunError.textContent = message;
+    els.firstRunError.hidden = false;
+  };
+  if (pass.length < 8) return fail('新密码至少 8 位');
+  if (pass === DEFAULT_PASSWORD) return fail('不能继续使用默认口令 ' + DEFAULT_PASSWORD);
+  if (pass !== confirm) return fail('两次输入的新密码不一致');
+  els.firstRunSave.disabled = true;
   try {
-    if (vaultMeta && vaultMeta.salt && vaultMeta.wrapped) {
-      if (vaultMeta.dev) {
-        key = await unlockWithDeviceSecret();
-      } else {
-        // 旧壳（v2.9 及以前）建的密码包裹库：等用户输一次旧密码迁移。
-        shellGateMode = 'migrate';
-      }
-    } else if (DEVICE_KEY_OK) {
-      // 第一次使用：不询问任何密码，直接建一个由设备密钥保护的库。
-      key = await createLocalVault('', { dev: true });
-      accountName = '本机';
-    }
+    await setLocalPassword(pass);
+    closeDialog(els.firstRunDialog);
+    toast('本机密码已更新');
   } catch (error) {
-    console.warn('[NasNotes] shell auto unlock failed', error);
-    key = null;
-    if (!shellGateMode) shellGateMode = vaultMeta && vaultMeta.salt ? 'broken' : 'bootfail';
-  }
-  if (key) {
-    if (!accountName) accountName = '本机';
-    await afterUnlock(key);
-    return;
-  }
-  showShellGate();
-  if (shellGateMode === 'bootfail') {
-    showLockError('本机便签初始化失败：' + ((vaultMeta && vaultMeta.salt) ? '设备密钥解不开现有库，可清空重建。' : '请重启应用，若反复失败请清空数据重建。'));
+    fail('保存失败：' + (error && error.message ? error.message : '未知错误'));
+  } finally {
+    els.firstRunSave.disabled = false;
   }
 }
 
@@ -1688,13 +1723,16 @@ async function fetchMeta() {
     const localOnly = vaultMeta && vaultMeta.local_only;
     const mismatch = localOnly && vaultMeta.salt && meta.salt && vaultMeta.salt !== meta.salt;
     if (!mismatch) {
-      vaultMeta = {
+      // 保留本机自有字段（账户名等），只同步库的包裹层与版本信息。
+      const carry = {};
+      if (vaultMeta && vaultMeta.localAccount) carry.localAccount = vaultMeta.localAccount;
+      vaultMeta = Object.assign(carry, {
         salt: meta.salt,
         wrapped: meta.wrapped,
         iterations: meta.iterations,
         version: meta.version,
         legacy: Boolean(meta.verifier && !meta.wrapped)
-      };
+      });
       if (vaultMeta.legacy) vaultMeta.verifier = meta.verifier;
       await saveLocalVault(vaultMeta);
     }
@@ -1707,6 +1745,10 @@ async function afterUnlock(key) {
   cryptoKey = key;
   offlineReady = true;
   syncErrorKind = '';
+  // 本机账户名（默认 admin）来自库元数据；不再用「本机」这种无意义的占位名。
+  if (!accountName || accountName === '本机') {
+    accountName = (vaultMeta && vaultMeta.localAccount) || DEFAULT_USERNAME;
+  }
   els.lockScreen.hidden = true;
   els.passphraseInput.value = '';
   els.confirmInput.value = '';
@@ -1724,6 +1766,8 @@ async function afterUnlock(key) {
   } else {
     stopAutoSync();
   }
+  // 默认口令（首次使用）必须在进入后立刻改掉，否则等于没有门禁。
+  if (vaultMeta && vaultMeta.mustChange) promptInitialPasswordChange();
 }
 
 function countLocalNotes() {
@@ -1880,11 +1924,6 @@ async function unlockOnline(username, passphrase) {
 }
 
 async function handleUnlock() {
-  // 壳内免密形态：锁屏只可能是兜底面板（旧库迁移/损坏），没有常规解锁流程。
-  if (IS_SHELL && DEVICE_KEY_OK) {
-    await handleShellGateUnlock();
-    return;
-  }
   const username = (els.usernameInput.value || '').trim() || DEFAULT_USERNAME;
   const passphrase = els.passphraseInput.value;
   els.lockError.hidden = true;
@@ -2082,23 +2121,7 @@ async function lockApp() {
   els.attachmentList.innerHTML = '';
   els.attachCount.textContent = '';
   document.querySelectorAll('.image-lightbox').forEach((node) => node.remove());
-  // 壳内免密形态：门禁在系统侧（锁屏/指纹/人脸），应用内不设密码。
-  // 点「锁定」= 立刻清掉内存明文再用设备密钥重新解锁（几秒的派生开销），
-  // 语义是「现在起内存里没有明文可读」；真正的出门禁靠退回后台/锁屏。
-  if (IS_SHELL && DEVICE_KEY_OK) {
-    try {
-      const key = await unlockWithDeviceSecret();
-      if (key) {
-        await afterUnlock(key);
-        toast('内存明文已清除，库重新解锁');
-        return;
-      }
-      shellGateMode = 'broken';
-    } catch (error) {
-      console.warn('[NasNotes] shell re-unlock failed', error);
-      shellGateMode = 'broken';
-    }
-  }
+  // 「锁定」= 立刻清掉内存明文与 wkey，回到本机锁屏，重新输入本机账户密码才能继续。
   showLockScreen('unlock');
 }
 
@@ -2523,20 +2546,8 @@ async function connectServerAndSync(options) {
     }
     wkeyBytes = wkey;
     cryptoKey = await importWkey(wkey);   // 接管/校验服务器库后，内存密钥必须换成它的 wkey
-    if (DEVICE_KEY_OK) {
-      // 本机 wrapped 换成/保持设备密钥包裹；serverWrapped 记下服务器那层
-      await rekeyLocalVaultForDevice(password);
-    } else {
-      vaultMeta = Object.assign({}, vaultMeta || {}, {
-        salt: serverVault.salt,
-        iterations: serverVault.iterations || PBKDF2_ITERATIONS,
-        version: serverVault.version || VAULT_VERSION,
-        serverWrapped: serverVault.wrapped,
-        local_only: false
-      });
-      if (!(vaultMeta && vaultMeta.wrapped)) vaultMeta.wrapped = serverVault.wrapped;
-      await saveLocalVault(vaultMeta);
-    }
+    // 本机包裹层与服务器层统一用账户口令重包裹：之后本机解锁密码就是服务器账户密码。
+    await rekeyLocalVaultForPassword(password);
     if (!sameVault) await resetSyncCursor();   // 接管了别的库：全量对齐
     await initialSyncAfterConnect();
     return { mode: 'linked' };
@@ -2550,14 +2561,9 @@ async function connectServerAndSync(options) {
   // 远端还没有加密库：把本机库连同「账户密码包裹层」推上去
   if (!vaultMeta || !vaultMeta.salt) {
     // boot 已自动建库；保险起见这里兜底（正常走不到）
-    await createLocalVault(DEVICE_KEY_OK ? '' : password, DEVICE_KEY_OK ? { dev: true } : {});
+    await createLocalVault(password);
   }
-  if (DEVICE_KEY_OK) {
-    await rekeyLocalVaultForDevice(password);
-  } else {
-    vaultMeta = Object.assign({}, vaultMeta, { serverWrapped: await buildServerWrapped(password) });
-    await saveLocalVault(vaultMeta);
-  }
+  await rekeyLocalVaultForPassword(password);
   await uploadServerWrapped();
   await resetSyncCursor();
   await initialSyncAfterConnect();
@@ -3377,6 +3383,20 @@ els.resetCancelBtn.addEventListener('click', () => {
   els.lockError.hidden = true;
 });
 
+els.firstRunSave.addEventListener('click', submitInitialPassword);
+// 默认口令改密不允许用 Esc 关掉，否则用户一路跳过等于没设防。
+els.firstRunDialog.addEventListener('cancel', (event) => {
+  event.preventDefault();
+  els.firstRunError.textContent = '请先设置一个新密码（不能使用默认口令 admin）';
+  els.firstRunError.hidden = false;
+  els.firstRunPass.focus();
+});
+[els.firstRunPass, els.firstRunConfirm].forEach((input) => {
+  input.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') { event.preventDefault(); submitInitialPassword(); }
+  });
+});
+
 els.resetVaultConfirmBtn.addEventListener('click', async () => {
   if ((els.resetConfirmInput.value || '').trim() !== '清空数据') {
     return showLockError('请输入「清空数据」四个字，或点「取消」退出');
@@ -3436,10 +3456,10 @@ els.resetVaultConfirmBtn.addEventListener('click', async () => {
         });
       }
     } catch (error) { /* 本机缓存清理失败不影响服务端已清空 */ }
-    if (IS_SHELL && DEVICE_KEY_OK) {
-      // 免密形态：清完直接重建一个设备密钥保护的空库进入应用，不再出现锁屏。
+    if (IS_SHELL) {
+      // 清完重建：用默认口令建一个空库并强制改密，直接进入应用。
       shellGateMode = '';
-      await shellAutoUnlock();
+      await shellBoot();
       toast('本机便签与加密库已全部清除（NAS 上的数据不受影响）');
     } else {
       showLockScreen('init');
@@ -3470,20 +3490,45 @@ els.saveAccount.addEventListener('click', async () => {
   const currentPass = els.acctCurrentInput.value;
   const newPass = els.acctNewInput.value;
   const confirmPass = els.acctConfirmInput.value;
-  if (!sessionToken || !currentName) return acctErrorShow('请先登录');
-  if (!currentPass) return acctErrorShow('修改账户需要先输入当前口令');
+  if (!cryptoKey || !wkeyBytes || !vaultMeta || !vaultMeta.salt) {
+    return acctErrorShow('请先解锁本机库再修改账户');
+  }
+  if (!currentPass) return acctErrorShow('修改前请输入当前密码');
   if (targetName && targetName !== currentName && !/^[A-Za-z0-9_.\-\u4e00-\u9fff]{1,64}$/.test(targetName)) {
     return acctErrorShow('账户名只能包含中英文、数字、._-（最长 64）');
   }
   if (newPass) {
-    if (newPass.length < 8) return acctErrorShow('新口令至少 8 位');
-    if (newPass !== confirmPass) return acctErrorShow('两次输入的新口令不一致');
-    if (!cryptoKey || !wkeyBytes || !vaultMeta || !vaultMeta.salt) {
-      return acctErrorShow('改口令需要先解锁（要重新包裹加密库）。请先在登录页登录后再来设置。');
-    }
+    if (newPass.length < 8) return acctErrorShow('新密码至少 8 位');
+    if (newPass === DEFAULT_PASSWORD) return acctErrorShow('不能继续使用默认口令 ' + DEFAULT_PASSWORD);
+    if (newPass !== confirmPass) return acctErrorShow('两次输入的新密码不一致');
+  }
+  if (!newPass && (!targetName || targetName === currentName)) {
+    return acctErrorShow('没有要修改的内容：账户名未变，新密码为空');
   }
   els.saveAccount.disabled = true;
   try {
+    // 本机口令就是解锁口令：先在本地验证一次（纯本机模式没有服务器可校验）。
+    let localKey = null;
+    try { localKey = await unlockWithLocalVault(currentPass); } catch (error) { localKey = null; }
+    if (!localKey) return acctErrorShow('当前密码不正确');
+
+    if (!sessionToken) {
+      // 还没连接服务器：只重包裹本机层，不碰服务端。
+      if (newPass) await setLocalPassword(newPass);
+      if (targetName && targetName !== currentName) {
+        vaultMeta.localAccount = targetName;
+        await saveLocalVault(vaultMeta);
+      }
+      accountName = targetName || currentName;
+      els.acctCurrentInput.value = '';
+      els.acctNewInput.value = '';
+      els.acctConfirmInput.value = '';
+      els.acctNameInput.value = accountName;
+      closeDialog(els.settingsDialog);
+      toast(newPass ? '本机密码已更新' : '账户名已更新');
+      return;
+    }
+
     // 普通账户校验：当前密码交给服务端按哈希核对，不做客户端派生。
     const body = {
       username: targetName || currentName,
@@ -3519,13 +3564,11 @@ els.saveAccount.addEventListener('click', async () => {
       vaultMeta = Object.assign({}, vaultMeta, {
         salt: body.vault.salt,
         serverWrapped: body.vault.wrapped,
+        wrapped: body.vault.wrapped,   // 本机层与服务器层同口令：一起换
+        mustChange: false,
         iterations: body.vault.iterations,
         version: body.vault.version
       });
-      if (!vaultMeta.dev) {
-        // PWA 形态只有一个包裹层，就是账户密码层
-        vaultMeta.wrapped = body.vault.wrapped;
-      }
       await idbPut(STORE_META, { key: 'vault', value: JSON.stringify(vaultMeta) });
       // 壳内把新口令交回原生保管，下次「连接服务器」直接用它登录
       try {
@@ -3551,7 +3594,7 @@ els.saveAccount.addEventListener('click', async () => {
     console.warn('[NasNotes] account change failed', error);
     acctErrorShow('保存失败：' + (error && error.message ? error.message : '未知错误'));
   } finally {
-    els.saveAccount.disabled = !sessionToken;
+    els.saveAccount.disabled = !cryptoKey;
   }
 });
 
@@ -4653,7 +4696,7 @@ async function openSettingsTo(panel) {
   els.acctNewInput.value = '';
   els.acctConfirmInput.value = '';
   els.acctError.hidden = true;
-  els.saveAccount.disabled = !sessionToken;
+  els.saveAccount.disabled = !cryptoKey;
   openDialog(els.settingsDialog);
   updateSyncUI();
   updateServerLabel();
@@ -4806,10 +4849,9 @@ els.importFile.addEventListener('change', () => {
     }
   }
 
-  // 壳内免密形态（新壳 + 设备密钥可用）：门禁交给系统（锁屏/指纹/人脸），
-  // boot 直接用设备密钥解开本机库进入应用，不再出现应用内密码。
-  if (IS_SHELL && DEVICE_KEY_OK) {
-    await shellAutoUnlock();
+  // 壳内一律走口令门禁：没有库用默认口令建库（随即强制改密），有库一律先解锁。
+  if (IS_SHELL) {
+    await shellBoot();
   } else {
     offlineReady = Boolean(vaultMeta && vaultMeta.wrapped);
     showLockScreen(vaultMeta && vaultMeta.salt ? 'unlock' : 'init');

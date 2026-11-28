@@ -385,7 +385,15 @@ function getJson(url) {
   ], { stdio: 'ignore' });
 
   const cleanup = () => {
-    try { child.kill(); } catch (error) { /* ignore */ }
+    try {
+      // Windows 上 child.kill() 只杀父进程，headless 浏览器会把子进程留在后台并占着端口，
+      // 下一次跑测试就会连到旧实例（连带旧 profile 的 IndexedDB）。用 taskkill /T 清整棵树。
+      if (process.platform === 'win32') {
+        require('child_process').spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+      } else {
+        child.kill();
+      }
+    } catch (error) { /* ignore */ }
     try { server.close(); } catch (error) { /* ignore */ }
     setTimeout(() => { try { fs.rmSync(profile, { recursive: true, force: true }); } catch (error) { /* ignore */ } }, 300);
   };
@@ -495,4 +503,7 @@ function getJson(url) {
   }
 
   console.log('\nMobile layout tests: ' + pass + ' pass');
+  // taskkill 是异步子进程，加上 http 服务的 keep-alive 句柄，事件循环可能一直不空，
+  // 断言已经跑完却挂在收尾阶段。跑完就明确退出，不留给句柄决定。
+  setTimeout(() => process.exit(process.exitCode || 0), 300);
 })();

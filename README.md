@@ -42,13 +42,13 @@ git clone https://gh-proxy.com/https://github.com/jikun2025/nas-notes.git
 git clone https://github.kkgithub.com/jikun2025/nas-notes.git
 ```
 
-安卓 APK 挂在 Releases：从 [Releases](https://github.com/jikun2025/nas-notes/releases) 下载 `nas-notes-shell-v3.0.apk`；下载慢时同样加前缀：
+安卓 APK 挂在 Releases：从 [Releases](https://github.com/jikun2025/nas-notes/releases) 下载 `nas-notes-shell-v3.2.apk`；下载慢时同样加前缀：
 
 ```
-https://ghfast.top/https://github.com/jikun2025/nas-notes/releases/download/v3.0/nas-notes-shell-v3.0.apk
+https://ghfast.top/https://github.com/jikun2025/nas-notes/releases/download/v3.2/nas-notes-shell-v3.2.apk
 ```
 
-> 手机壳 v3.0 起**应用内没有密码**：门禁交给手机锁屏/指纹/人脸，本机加密库由原生设备密钥自动包裹，打开即用；旧版本用密码建的库会在首次启动时让你输一次旧密码完成迁移。要连 NAS 时打开「设置 → 连接服务器」填地址、账户、密码（HTTPS 自签服务可在同一页导入自家 CA 证书），密码只存原生沙箱、不进网页存储。
+> 手机壳 v3.2 起**每次打开都要输本机口令**：首个口令是默认的 `admin`，进入后会强制你改成自己的（至少 8 位、不能还是 `admin`）。这个口令同时就是本机加密库的保护口令——便签的 wkey 由 `PBKDF2(口令, salt, 310k)` 包裹，换了口令旧口令立即失效。v3.0/v3.1 用原生设备密钥包裹的老库会在首次启动时静默迁移到口令包裹（已连过 NAS 的沿用你原来的账户口令，无需重输），数据不丢。要连 NAS 时打开「设置 → 连接服务器」填地址、账户、密码（HTTPS 自签服务可在同一页导入自家 CA 证书）；同一个口令既可解锁本机库、也作为 NAS 账户口令。
 
 > 「设置 → 连接服务器」里的地址示例只是占位，请填你自己的 `NAS_IP:端口`；填过一次会存进原生配置。更推荐从源码自己 `gradle assembleRelease` 打包，签名在你手里。
 

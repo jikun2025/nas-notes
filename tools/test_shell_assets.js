@@ -104,7 +104,7 @@ ok('HTTPS 信任：不内置任何 CA/pin，导入过 CA 走「系统根＋导�
   assert.match(java, /a\.checkServerTrusted\(chain, authType\); \} catch[\s\S]*?b\.checkServerTrusted/);
 });
 
-ok('设备密钥与服务器账户桥齐备（免密直入的根基，只存 SharedPreferences）', () => {
+ok('设备密钥与服务器账户桥齐备（旧库迁移与静默重登的根基，只存 SharedPreferences）', () => {
   assert.match(java, /public String getDeviceSecret\(\)/);
   assert.match(java, /private static final String PREF_DEV_SECRET = "dev_secret";/);
   assert.match(java, /new java\.security\.SecureRandom\(\)\.nextBytes\(buf\)/);

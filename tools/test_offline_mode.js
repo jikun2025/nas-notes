@@ -36,20 +36,23 @@ ok('锁屏为「仅在本机使用」留了入口（PWA/旧壳：不连 NAS 也�
   assert.match(app, /local_only: true/);
 });
 
-ok('新壳免密直入：设备密钥包裹本机库，boot 不出现应用密码', () => {
-  // 判据只看原生桥有没有设备密钥能力（与是否配过 NAS 无关）
-  assert.match(app, /const DEVICE_KEY_OK = \(function \(\)/);
-  assert.match(app, /typeof api\.getDeviceSecret === 'function'/);
-  assert.match(app, /async function deviceWrapKey\(saltB64\)/);
-  assert.match(app, /async function unlockWithDeviceSecret\(\)/);
-  assert.match(app, /async function shellAutoUnlock\(\)/);
-  // 首启没有库：直接建一个设备密钥库，不问密码
-  assert.match(app, /createLocalVault\('', \{ dev: true \}\)/);
-  // boot 走 shellAutoUnlock，而不是 showLockScreen
-  assert.match(app, /if \(IS_SHELL && DEVICE_KEY_OK\) \{\s*\n\s*await shellAutoUnlock\(\);/);
-  // 旧壳建的密码库：兜底面板输一次旧密码迁移，之后同样免密
-  assert.match(app, /shellGateMode = 'migrate'/);
-  assert.match(app, /async function migrateLocalVaultToDevice\(\)/);
+ok('壳内口令门禁：默认口令建库 → 强制改密 → 每次启动都要输密码', () => {
+  assert.match(app, /const DEFAULT_PASSWORD = 'admin';/);
+  // boot 一律走 shellBoot：没有库用默认口令建库，有库回锁屏
+  assert.match(app, /async function shellBoot\(\)/);
+  assert.match(app, /if \(IS_SHELL\) \{\s*\n\s*await shellBoot\(\);/);
+  assert.match(app, /createLocalVault\(DEFAULT_PASSWORD, \{/);
+  assert.match(app, /mustChange: true/);
+  // 强制改密：没有「稍后」，默认口令被显式拒绝
+  assert.match(app, /function promptInitialPasswordChange\(\)/);
+  assert.match(app, /async function submitInitialPassword\(\)/);
+  assert.match(app, /if \(pass === DEFAULT_PASSWORD\) return fail/);
+  assert.match(app, /async function setLocalPassword\(newPassword\)/);
+  // v3.0/v3.1 的设备密钥库在启动时静默迁移为口令库
+  assert.match(app, /async function migrateDeviceVaultToPassword\(\)/);
+  // 免密直入必须彻底退场
+  assert.doesNotMatch(app, /async function shellAutoUnlock\(\)/);
+  assert.doesNotMatch(app, /createLocalVault\('', \{ dev: true \}\)/);
   // 设备密钥只在内存里缓存一次，绝不落网页存储
   assert.match(app, /let devSecretMemo = null;/);
   assert.match(app, /const s = String\(api\.getDeviceSecret\(\) \|\| ''\);\s*\n\s*return s\.length >= 32 \? s : '';/);
@@ -292,11 +295,13 @@ const FLOW = String.raw`(async () => {
   } catch (error) {
     info.error = String((error && error.message) || error);
   }
+  info.errs = (window.__errs || []).join(' | ');
   info.ok = info.steps.length > 0 && info.steps.every((s) => s.ok);
   return JSON.stringify(info);
 })()`;
 
-// 新壳（有设备密钥能力）的完整流程：boot 免密直入 → 建便签 → 点同步被引导去设置。
+// 新壳（有设备密钥能力）的完整流程：
+// 首启用默认口令 admin 自动建库 → 强制改密 → 建便签 → 锁定后必须输密码 → 点同步被引导去设置。
 const FLOW_DEVICE = String.raw`(async () => {
   const info = { steps: [] };
   const step = (name, good, extra) => info.steps.push({ name, ok: !!good, extra: extra === undefined ? '' : String(extra) });
@@ -329,52 +334,73 @@ const FLOW_DEVICE = String.raw`(async () => {
 
   try {
     const lock = document.getElementById('lockScreen');
+    const firstRun = document.getElementById('firstRunDialog');
+    const firstRunOpen = () => firstRun.open || firstRun.hasAttribute('open');
     const secret = window.__NN_DEV_SECRET__ || '';
-    step('桩桥提供设备密钥（免密形态成立）',
+    const NEW_PASS = 'Nn-2026-test';
+    step('桩桥提供设备密钥（旧库迁移路径用）',
       typeof (window.NasNative || {}).getDeviceSecret === 'function' && secret.length >= 32);
 
-    // 门禁在系统侧：boot 拿设备密钥直接开库，应用内不问密码
+    // 首次启动：用默认口令建库直接进入，而不是把用户挡在「设置密码」页
     const entered = await waitFor(() => lock.hidden === true, 30000);
     info.lockError = document.getElementById('lockError').textContent.trim();
-    step('首启免密直入：不出现应用锁屏、不用输密码', entered, info.lockError);
-    if (!entered) throw new Error('未能自动进入');
+    step('首启自动建库并进入（默认口令 admin）', entered, info.lockError);
+    if (!entered) throw new Error('未能进入应用');
+
+    const prompted = await waitFor(() => firstRunOpen(), 6000);
+    step('进入后强制弹出改密对话框', prompted);
+
+    // 默认口令必须被拒绝
+    const passInput = document.getElementById('firstRunPass');
+    const confInput = document.getElementById('firstRunConfirm');
+    const errEl = document.getElementById('firstRunError');
+    passInput.value = 'admin';
+    confInput.value = 'admin';
+    document.getElementById('firstRunSave').click();
+    const rejected = await waitFor(() => !errEl.hidden, 5000);
+    step('拒绝继续使用默认口令 admin', rejected, errEl.textContent.trim());
+    step('对话框此时仍开着（不能跳过）', firstRunOpen());
+
+    passInput.value = NEW_PASS;
+    confInput.value = NEW_PASS;
+    document.getElementById('firstRunSave').click();
+    const closed = await waitFor(() => !firstRunOpen(), 8000);
+    step('设置新密码后对话框关闭', closed, errEl.textContent.trim());
 
     document.getElementById('newBtn').click();
     const editing = await waitFor(() => document.getElementById('deleteBtn').hidden === false, 6000);
     step('能新建便签', editing);
-    const title = '免密壳测试便签';
+    const title = '口令门禁测试便签';
     const titleInput = document.getElementById('titleInput');
     titleInput.value = title;
     titleInput.dispatchEvent(new Event('input', { bubbles: true }));
     const rich = document.getElementById('richEditor');
-    rich.innerHTML = '<p>设备密钥包裹，全程不联网</p>';
+    rich.innerHTML = '<p>口令包裹，全程不联网</p>';
     rich.dispatchEvent(new Event('input', { bubbles: true }));
     await sleep(1200);
 
     const db = await openDb();
     const notes = await all(db, 'notes');
-    const outbox = await all(db, 'outbox');
     const vaultRow = await one(db, 'meta', 'vault');
     const vault = vaultRow && vaultRow.value ? JSON.parse(vaultRow.value) : {};
-    const dump = JSON.stringify({ notes, outbox, meta: vaultRow });
+    const dump = JSON.stringify({ notes, meta: vaultRow });
     step('便签以密文落盘（库内找不到明文）',
-      notes.length >= 1 && dump.indexOf(title) < 0 && dump.indexOf('设备密钥包裹') < 0);
-    step('本机库是设备密钥包裹（dev 标记 + wrapped）', vault.dev === true && !!vault.wrapped);
+      notes.length >= 1 && dump.indexOf(title) < 0 && dump.indexOf('口令包裹') < 0);
+    step('本机库由口令包裹（不再有 dev 免密标记）', !vault.dev && !!vault.wrapped);
+    step('默认口令已改掉（mustChange 清空）', vault.mustChange !== true);
     step('没连服务器时库只在本机（local_only）', vault.local_only === true);
 
-    // 设备密钥只该留在原生侧：网页存储里一个字节都不许有
     let lsDump = '';
     for (let i = 0; i < localStorage.length; i += 1) {
       const k = localStorage.key(i);
       lsDump += k + '=' + localStorage.getItem(k) + ';';
     }
     step('设备密钥不落 IndexedDB / localStorage', (dump + lsDump).indexOf(secret) < 0);
+    step('口令明文不落网页存储', (dump + lsDump).indexOf(NEW_PASS) < 0);
 
     info.badge = document.getElementById('syncBadge').textContent.trim();
     step('状态胶囊提示待同步', /待同步/.test(info.badge), info.badge);
 
-    // 点状态胶囊：壳内没配服务器地址 → 直接引导去「设置 → 连接服务器」，
-    // 既不弹「输入 NAS 密码」的旧对话框，也不发任何请求。
     document.getElementById('syncBadge').click();
     await sleep(900);
     const settings = document.getElementById('settingsDialog');
@@ -391,10 +417,22 @@ const FLOW_DEVICE = String.raw`(async () => {
     await sleep(320);
     step('设置弹窗「取消」能关掉', !settings.hasAttribute('open'));
 
-    // 点「锁定」＝清掉内存明文，再用设备密钥自动重解锁：不回密码页
+    // 锁定 = 回锁屏，必须重新输密码
     document.getElementById('lockBtn').click();
-    await sleep(4500);
-    step('点「锁定」仍免密（清明文后自动重解锁，不弹锁屏）', lock.hidden === true);
+    const locked = await waitFor(() => lock.hidden === false, 8000);
+    step('点「锁定」回到本机锁屏（不再自动解锁）', locked);
+
+    const passphrase = document.getElementById('passphraseInput');
+    const lockError = document.getElementById('lockError');
+    passphrase.value = 'definitely-wrong';
+    document.getElementById('unlockBtn').click();
+    const wrongRejected = await waitFor(() => !lockError.hidden, 12000);
+    step('错误密码被拒绝', wrongRejected, lockError.textContent.trim());
+
+    passphrase.value = NEW_PASS;
+    document.getElementById('unlockBtn').click();
+    const reopened = await waitFor(() => lock.hidden === true, 25000);
+    step('正确密码解锁，便签仍在', reopened && (await all(db, 'notes')).length >= 1);
 
     step('全程零 /api 请求', window.__apiCalls.length === 0, JSON.stringify(window.__apiCalls));
   } catch (error) {
@@ -462,7 +500,15 @@ async function runBrowserFlow(label, probe, flowSource, port) {
   ], { stdio: 'ignore' });
 
   const cleanup = () => {
-    try { child.kill(); } catch (error) { /* ignore */ }
+    try {
+      // Windows 上 child.kill() 只杀父进程，headless 浏览器会把子进程留在后台并继续
+      // 占着 CDP 端口——下次测试就会连到旧实例、用上旧 profile 的 IndexedDB。
+      if (process.platform === 'win32') {
+        spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+      } else {
+        child.kill();
+      }
+    } catch (error) { /* ignore */ }
     try { server.close(); } catch (error) { /* ignore */ }
     setTimeout(() => { try { fs.rmSync(profile, { recursive: true, force: true }); } catch (error) { /* ignore */ } }, 300);
   };
@@ -536,6 +582,7 @@ async function runBrowserFlow(label, probe, flowSource, port) {
         process.exitCode = 1;
       }
     });
+    if (info.errs) console.error('  · 页面错误：' + info.errs);
     if (info.error) {
       console.error('  FAIL 离线流程中断：' + info.error);
       process.exitCode = 1;
@@ -557,7 +604,8 @@ const API_COUNTER = 'window.__apiCalls=[];' +
   'if(String(u).indexOf("/api/")>=0)window.__apiCalls.push(String(u));' +
   'return orig.apply(this,arguments);};})();';
 // A：旧壳（v2.9 及以前的桥，没有设备密钥能力）——仍走应用内密码
-const PROBE_LEGACY = '<script>window.__NN_SHELL__=true;' + API_COUNTER + '</script>';
+const ERR_CATCH = 'window.__errs=[];window.addEventListener("error",function(e){window.__errs.push("err:"+e.message);});window.addEventListener("unhandledrejection",function(e){window.__errs.push("rej:"+((e.reason&&e.reason.message)||e.reason));});';
+const PROBE_LEGACY = '<script>window.__NN_SHELL__=true;' + API_COUNTER + ERR_CATCH + '</script>';
 // B：新壳——桥提供设备密钥，boot 免密直入
 const PROBE_DEVICE = '<script>window.__NN_DEV_SECRET__="nn-test-device-secret-0123456789abcdef";' +
   'window.__NN_SHELL__=true;' + API_COUNTER +
@@ -566,10 +614,12 @@ const PROBE_DEVICE = '<script>window.__NN_DEV_SECRET__="nn-test-device-secret-01
   'getServerAccount:function(){return "";},clearServerAccount:function(){}};</script>';
 
 runBrowserFlow('A 旧壳（无设备密钥）：密码建本机库 + 离线读写', PROBE_LEGACY, FLOW, 19410)
-  .then(() => runBrowserFlow('B 新壳（设备密钥）：免密直入 + 同步引导去设置', PROBE_DEVICE, FLOW_DEVICE, 19470))
+  .then(() => runBrowserFlow('B 新壳：默认口令建库 + 强制改密 + 锁屏解锁 + 同步引导去设置', PROBE_DEVICE, FLOW_DEVICE, 19470))
   .catch((error) => {
     console.error('  FAIL 浏览器离线流程：' + (error && error.message ? error.message : error));
     process.exitCode = 1;
   }).finally(() => {
     console.log('\nOffline mode tests: ' + pass + ' pass');
+    // 同 test_mobile_layout：taskkill 子进程与 http 句柄会让事件循环不空，断言跑完就退出。
+    setTimeout(() => process.exit(process.exitCode || 0), 300);
   });

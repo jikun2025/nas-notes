@@ -216,7 +216,7 @@
         </header>
         <div class="settings-body">
           <section class="settings-panel" data-panel="account">
-            <p class="settings-lead">账户名和密码可随时修改。密码同时用于解密便签：改密码时本机自动重新封装加密库，已有便签不受影响。</p>
+            <p class="settings-lead">账户名和密码可随时修改。密码既是本机加密库的解锁口令，也是登录所连 NAS 的账户口令：改密码时应用会自动重新封装加密库，已有便签不受影响。</p>
             <label for="acctNameInput">账户名</label>
             <input id="acctNameInput" type="text" placeholder="当前账户" autocomplete="username" autocapitalize="none" spellcheck="false">
             <label for="acctCurrentInput">当前密码</label>
@@ -230,7 +230,7 @@
             <p class="muted">保存后旧会话立即失效，本机将用新账户自动重新登录。</p>
           </section>
           <section class="settings-panel" data-panel="sync" hidden>
-            <p class="settings-lead">便签始终先加密写入本机，断网也能读写。应用本身不需要密码（门禁交给手机锁屏/指纹/人脸）；只有要连 NAS 时，才在这里填服务器地址、账户密码，HTTPS 自签服务还可导入自家 CA 证书。同步只在你点「立即同步」时发生，不会在后台自动联网。</p>
+            <p class="settings-lead">便签始终先加密写入本机，断网也能读写；每次打开应用需要输入本机账户密码解锁（默认口令 admin，首次使用会强制修改）。只有要连 NAS 时，才在这里填服务器地址、账户密码，HTTPS 自签服务还可导入自家 CA 证书；连上后本机解锁口令即与 NAS 账户口令一致。同步只在你点「立即同步」时发生，不会在后台自动联网。</p>
             <div class="sync-card">
               <div class="sync-card-row"><span>本机数据</span><b id="syncLocalState">未解锁</b></div>
               <div class="sync-card-row"><span>待同步</span><b id="syncPendingCount">—</b></div>
@@ -359,6 +359,19 @@
     <div class="dialog-actions">
       <button id="syncLoginCancel" class="ghost" type="button">稍后</button>
       <button id="syncLoginOk" class="primary" type="button">连接并同步</button>
+    </div>
+  </dialog>
+
+  <dialog id="firstRunDialog" class="compact-dialog" aria-label="设置本机密码">
+    <h3>先改掉默认密码</h3>
+    <p class="muted">本机加密库目前用默认口令 admin 保护，知道这个口令的人都能打开你的便签。请设置一个只有你知道的密码（至少 8 位）。这个密码同时用于解锁本机和登录你连接的 NAS，请记牢——忘记后本机便签无法恢复。</p>
+    <label for="firstRunPass">新密码</label>
+    <input id="firstRunPass" type="password" autocomplete="new-password" placeholder="至少 8 位，不能是 admin">
+    <label for="firstRunConfirm">确认新密码</label>
+    <input id="firstRunConfirm" type="password" autocomplete="new-password" placeholder="重复新密码">
+    <p id="firstRunError" class="lock-error" hidden></p>
+    <div class="dialog-actions">
+      <button id="firstRunSave" class="primary" type="button">保存并进入</button>
     </div>
   </dialog>
 

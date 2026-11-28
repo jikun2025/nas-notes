@@ -93,7 +93,7 @@ ok('NasHttp：只在导入过 CA 时才设 caPath，否则走系统默认信任'
   assert.doesNotMatch(http, /192\.168\./);
 });
 
-ok('设备密钥与服务器账户桥齐备（免密直入的根基，只存原生侧）', () => {
+ok('设备密钥与服务器账户桥齐备（旧库迁移与静默重登的根基，只存原生侧）', () => {
   assert.match(bridge, /getDeviceSecret\(\): string/);
   assert.match(bridge, /NasPrefs\.getDeviceSecret\(\)/);
   assert.match(bridge, /saveServerAccount\(username: string, password: string\): string/);

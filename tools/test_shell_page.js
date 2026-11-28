@@ -9,7 +9,8 @@
 const fs = require('fs');
 const path = require('path');
 const http = require('http');
-const { execFile } = require('child_process');
+const os = require('os');
+const { execFile, spawn } = require('child_process');
 
 const ROOT = path.join(__dirname, '..');
 const STATIC = path.join(ROOT, 'static');
@@ -77,33 +78,27 @@ const FAKE_NATIVE = `<script>
   };
 </script>`;
 
-const PROBE = `<script>
-  window.addEventListener('load', function () {
-    var box = document.createElement('pre');
-    box.id = 'diag';
-    var info = {
-      shell: window.__NN_SHELL__ === true,
-      bridge: window.__NnBridge === true,
-      lock: !!document.getElementById('lockScreen'),
-      title: (document.getElementById('lockTitle') || {}).textContent || '',
-      inputs: document.querySelectorAll('#lockScreen input').length,
-      styles: document.styleSheets.length,
-      textLen: document.body.innerText.replace(/\\s+/g, '').length
-    };
-    fetch('/api/health').then(function (r) { return r.text().then(function (t) {
-      info.bridgeStatus = r.status;
-      info.bridgeBody = t.slice(0, 40);
-      info.calls = window.__calls;
-      box.textContent = JSON.stringify(info);
-      document.body.appendChild(box);
-    }); }).catch(function (e) {
-      info.bridgeError = String(e && e.message);
-      info.calls = window.__calls;
-      box.textContent = JSON.stringify(info);
-      document.body.appendChild(box);
-    });
-  });
-</script>`;
+// 探针：在页面里取渲染状态并真正打一次 /api/health（走原生桥桩）。
+const PROBE_SRC = `(async () => {
+  const info = {
+    shell: window.__NN_SHELL__ === true,
+    bridge: window.__NnBridge === true,
+    lock: !!document.getElementById('lockScreen'),
+    title: (document.getElementById('lockTitle') || {}).textContent || '',
+    inputs: document.querySelectorAll('#lockScreen input').length,
+    styles: document.styleSheets.length,
+    textLen: document.body.innerText.replace(/\\s+/g, '').length
+  };
+  try {
+    const resp = await fetch('/api/health');
+    info.bridgeStatus = resp.status;
+    info.bridgeBody = (await resp.text()).slice(0, 40);
+  } catch (error) {
+    info.bridgeError = String(error && error.message);
+  }
+  info.calls = window.__calls;
+  return JSON.stringify(info);
+})()`;
 
 const browser = findBrowser();
 if (!browser) {
@@ -123,10 +118,8 @@ const MIME = {
 };
 
 const PAGES = {
-  '/': buildVirtualPage(origin).replace('</body>', () => PROBE + '</body>')
-    .replace('<head>', () => '<head>' + FAKE_NATIVE),
-  '/inline': buildInlinePage(origin).replace('</body>', () => PROBE + '</body>')
-    .replace('<head>', () => '<head>' + FAKE_NATIVE)
+  '/': buildVirtualPage(origin).replace('<head>', () => '<head>' + FAKE_NATIVE),
+  '/inline': buildInlinePage(origin).replace('<head>', () => '<head>' + FAKE_NATIVE)
 };
 
 const server = http.createServer((req, res) => {
@@ -144,23 +137,84 @@ const server = http.createServer((req, res) => {
   res.end(fs.readFileSync(file));
 });
 
-function probePage(urlPath) {
-  return new Promise((resolve) => {
-    execFile(browser, ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check',
-      '--virtual-time-budget=6000', '--dump-dom', origin + urlPath],
-      { encoding: 'utf8', timeout: 90000, maxBuffer: 32 * 1024 * 1024 },
-      (error, stdout) => {
-        const out = String(stdout || '');
-        // 只看 DOM 里真正渲染出来的 <pre id="diag">，别匹配到脚本源码里的字面量
-        const match = /<pre id="diag"[^>]*>([\s\S]*?)<\/pre>/.exec(out);
-        if (!match) {
-          resolve({ fatal: '未拿到探针结果（页面可能白屏），DOM 长度 ' + out.length + '，前 300 字符：' + out.slice(0, 300) });
-          return;
-        }
-        try { resolve(JSON.parse(unescapeHtml(match[1]))); }
-        catch (e) { resolve({ fatal: '探针结果不是合法 JSON：' + match[1].slice(0, 200) }); }
-      });
+function httpJson(url) {
+  return new Promise((resolve, reject) => {
+    http.get(url, (res) => {
+      let body = '';
+      res.setEncoding('utf8');
+      res.on('data', (chunk) => { body += chunk; });
+      res.on('end', () => { try { resolve(JSON.parse(body)); } catch (e) { reject(e); } });
+    }).on('error', reject);
   });
+}
+
+// 用 CDP 打开页面并取探针结果。
+// 不用 --dump-dom：新版 Edge 在部分环境下不再把 DOM 打到 stdout（本机实测恒为空输出），
+// 换成 CDP 后与 test_offline_mode / test_mobile_layout 走同一条通道，行为更稳定。
+async function probePage(urlPath) {
+  const dbg = 19180 + Math.floor(Math.random() * 60);
+  const profile = fs.mkdtempSync(path.join(os.tmpdir(), 'nn-shell-'));
+  const child = spawn(browser, ['--headless=new', '--disable-gpu', '--no-first-run',
+    '--no-default-browser-check', '--disable-extensions',
+    '--remote-debugging-port=' + dbg, '--user-data-dir=' + profile, origin + urlPath], { stdio: 'ignore' });
+  const cleanup = () => {
+    try {
+      if (process.platform === 'win32') {
+        spawn('taskkill', ['/PID', String(child.pid), '/T', '/F'], { stdio: 'ignore' });
+      } else {
+        child.kill();
+      }
+    } catch (error) { /* ignore */ }
+    setTimeout(() => { try { fs.rmSync(profile, { recursive: true, force: true }); } catch (error) { /* ignore */ } }, 300);
+  };
+  try {
+    let target = null;
+    for (let i = 0; i < 80 && !target; i += 1) {
+      await new Promise((r) => setTimeout(r, 200));
+      try {
+        const list = await httpJson('http://127.0.0.1:' + dbg + '/json/list');
+        const pages = (list || []).filter((item) => item.type === 'page' && item.webSocketDebuggerUrl);
+        target = pages.find((item) => String(item.url || '').indexOf(urlPath === '/' ? origin : origin + urlPath) === 0)
+          || pages[0];
+      } catch (error) { /* 浏览器还没起来，继续等 */ }
+    }
+    if (!target) throw new Error('CDP 目标未就绪');
+
+    const ws = new WebSocket(target.webSocketDebuggerUrl);
+    await new Promise((resolve, reject) => {
+      ws.addEventListener('open', resolve);
+      ws.addEventListener('error', () => reject(new Error('CDP 连接失败')));
+    });
+    let seq = 0;
+    const pending = new Map();
+    ws.addEventListener('message', (ev) => {
+      let msg = null;
+      try { msg = JSON.parse(ev.data); } catch (error) { return; }
+      if (msg.id && pending.has(msg.id)) { pending.get(msg.id)(msg); pending.delete(msg.id); }
+    });
+    const send = (method, params) => new Promise((resolve) => {
+      const id = ++seq;
+      pending.set(id, resolve);
+      ws.send(JSON.stringify({ id, method, params: params || {} }));
+    });
+
+    for (let i = 0; i < 60; i += 1) {
+      const ready = await send('Runtime.evaluate', { expression: 'document.readyState', returnByValue: true });
+      const value = ready.result && ready.result.result && ready.result.result.value;
+      if (value === 'complete') break;
+      await new Promise((r) => setTimeout(r, 200));
+    }
+    await new Promise((r) => setTimeout(r, 2500));   // 等 boot 建库/派生成
+    const probe = await send('Runtime.evaluate', { expression: PROBE_SRC, awaitPromise: true, returnByValue: true });
+    ws.close();
+    const raw = probe.result && probe.result.result && probe.result.result.value;
+    if (!raw) throw new Error('探针没有返回结果');
+    return JSON.parse(raw);
+  } catch (error) {
+    return { fatal: '探针失败：' + (error && error.message ? error.message : error) };
+  } finally {
+    cleanup();
+  }
 }
 
 function check(label, info) {
