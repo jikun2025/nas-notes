@@ -46,6 +46,16 @@ ok('安全区变量来自原生 insets，浏览器退化为 env()', () => {
   assert.match(html, /viewport-fit=cover/);
 });
 
+// 线上事故回归（v3.2.1）：弹窗只要带 open 就必须落在 fixed 层
+ok('弹窗只要 open 就必须是 fixed 层（防「掉到页面底部」）', () => {
+  // 事故形态：open 属性在、.dialog-fallback 缺失 → UA 的 absolute 定位把面板
+  // 排到正文后面，要滚到底才看得见，遮罩也不出现。
+  assert.match(css, /dialog\[open\]\s*\{[^}]*position:\s*fixed/);
+  // openDialog 不能因为「已经 open」就提前返回，否则类永远不会补上
+  assert.doesNotMatch(app, /if \(dialog\.open\) return true;/);
+  assert.match(app, /dialog\.setAttribute\('open', ''\);\s*\r?\n\s*dialog\.classList\.add\('dialog-fallback'\)/);
+});
+
 // ---------- 真实浏览器 ----------
 function findBrowser() {
   const candidates = [

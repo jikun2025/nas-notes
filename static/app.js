@@ -2720,9 +2720,10 @@ function renderFolderOptions() {
 // body.dialog-open::before 兜住点击（见 style.css），Esc 由下面的监听补上。
 function openDialog(dialog) {
   if (!dialog) return false;
-  if (dialog.open) return true;
   try {
     // 只设属性，不调 showModal()/show()：两者都会把元素推进 top layer。
+    // 这里不做「已经 open 就直接返回」的短路：open 存在但 .dialog-fallback 缺失时，
+    // 弹窗会退化成 UA 的 absolute 定位、掉到页面最底部且没有遮罩（线上 v2.8 就是这样）。
     dialog.setAttribute('open', '');
     dialog.classList.add('dialog-fallback');
     document.body.classList.add('dialog-open');

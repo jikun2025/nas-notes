@@ -3,6 +3,18 @@
 轻签（NasNotes）的本地版本史。每个版本对应一次提交，并在 git 里打了同名附注标签（`git tag -n` 可看摘要）。
 APK 的 `versionCode` / `versionName` 与此处版本号同步；PWA 只需强刷让 Service Worker 换缓存。
 
+## v3.2.1 — 2026-11-28
+
+线上事故修复：NAS 网页版把设置面板排到了正文末尾，要滚到最下面才看得见，且像是「关不掉」。
+
+- **根因不在当前代码，而在 NAS 上跑着 v2.8 时期的旧镜像**（`sw.js` 的 `CACHE` 还是 `nas-notes-v28`）。那一版 `openDialog()` 走的是原生 `dialog.show()`：非模态 `show()` 既不进 top layer，也不加 `.dialog-fallback`，`<dialog>` 于是退回 UA 的 `position: absolute`，按静态位置排在 `</body>` 之前的正文之后 —— 实测 `top = 760`（正好等于视口高度，即首屏下沿），遮罩（`body.dialog-open::before`）也不会出现。已在 NAS 上重新同步源码并 `docker compose build && up -d`，现网 `sw.js` 为 `nas-notes-v34`、`style.css` 含兜底规则、`/api/health` 正常、`notes.db` 未被触碰。
+- **顺手补两条防线**（当前 v3.2 代码理论上走不到坏状态，但这两处漏一个就复发）：
+  - `openDialog()` 去掉「已经 open 就直接 return」的短路——`open` 在、类不在时，原实现会停在坏状态；现在每次都补齐 `open` 属性、`.dialog-fallback` 与 `body.dialog-open`。
+  - `style.css` 新增 `dialog[open] { position: fixed; inset: 0; margin: auto; height: fit-content; max-height: 88vh; z-index: 420 }` 兜底：只要带 `open` 就一定是固定层，任何漏加类的路径都不会再掉到页面底部。
+- **回归**：`test_mobile_layout.js` 新增 1 项（静态钉住 `dialog[open]` 的 fixed 兜底 + 禁止 `openDialog` 提前返回），全套 17 套 327 项通过。
+- **线上取证方法**（可复用）：headless Edge + `--ignore-certificate-errors` + CDP，在真实 NAS 页面上分三步读 `getComputedStyle`——`initial`（无 open，`display:none`）、`after-open-attr`（只有 open，修复前 `absolute/top 760`，修复后 `fixed/top 78`）、`after-class`（`fixed/z 420`），并用 `elementFromPoint` + `click()` 验证「×」确实能关（`afterOpen:false`、`body.dialog-open` 已移除）。
+- 版本：SW `nas-notes-v34`；APK `32 / 3.2.1`；鸿蒙 HAP `3000003 / 3.2.1`。
+
 ## v3.2 — 2026-11-28
 
 本机密码门禁回归：v3.0/v3.1 把开门禁完全交给系统锁屏（壳内免密直入），应用内的本机账户密码因此形同虚设。v3.2 改为**每次启动都要输本机口令**，首个口令是公开的默认值 `admin`，进去后**强制修改**。

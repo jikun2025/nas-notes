@@ -1,4 +1,4 @@
-# 轻签 · NasNotes v3.2
+# 轻签 · NasNotes v3.2.1
 
 轻量端到端加密便签：单容器 Python 标准库后端 + 零依赖 PWA 前端，另带安卓 APK 壳与鸿蒙 HAP 壳。服务端与手机缓存只保存 AES-GCM 密文。
 
@@ -53,8 +53,9 @@ NOTICE: 已创建默认账户 admin / admin —— 请首次登录后在「设�
 
 > 升级已有实例（已有 `data/notes.db`）**不会**被重置成 admin/admin——账户与数据原样保留。
 
-## 本版内容（v3.2）
+## 本版内容（v3.2.1）
 
+- **修复「设置面板掉到正文末尾、像是关不掉」**：根因是 NAS 上仍跑着 v2.8 时期的旧镜像（`sw.js` 缓存还是 `nas-notes-v28`），那一版用原生 `dialog.show()`——不进 top layer 也不加 `.dialog-fallback`，面板退回 UA 的 `absolute` 定位排到正文之后（实测 `top` 正好等于视口高度，所以必须滚到底才看见，遮罩也不出现）。现已重新部署；同时补两条防线：`openDialog()` 不再「已 open 就提前返回」，`style.css` 增加 `dialog[open] { position: fixed; … }` 兜底，任何漏加类的路径都不会再掉到页面底部。
 - **本机密码门禁回归**：`shellBoot()` 取代 v3.0 的 `shellAutoUnlock()`。无库 → 用默认口令 `admin` 建库进入并**强制改密**（对话框不可跳过、Esc 关不掉）；有库 → 停在锁屏输口令；手动锁定与会话过期一律回锁屏。
 - **老库静默迁移**：v3.0/v3.1 的 `dev: true` 设备密钥库在启动时解出 wkey → 立刻用口令重包裹 → 删除 `dev` 标记，数据不丢。已连过 NAS 的沿用原生沙箱里的账户口令（不打扰用户），纯本机库退到 `admin` 并触发改密。
 - **「设置 → 账户」不再依赖 `sessionToken`**：未登录也能改本机口令（只重包裹本机层），已登录则本机层与服务器层一起换；改密前先本地验证当前口令，并拒绝把口令改回 `admin`。
@@ -66,21 +67,21 @@ NOTICE: 已创建默认账户 admin / admin —— 请首次登录后在「设�
 ## 升级
 
 - **NAS / Docker**：`server.py` 打在镜像里，必须 `docker compose build && docker compose up -d`，只 `restart` 不会换代码；建议先备份 `data/notes.db`。
-- **浏览器 PWA**：下次打开自动换到 Service Worker `nas-notes-v33`；界面没变就强刷一次。
-- **安卓 APK**：装本页附带的 `nas-notes-shell-v3.2.apk`（versionCode 31 / versionName 3.2）。旧版 APK 连新服务端仍能同步（自动退回全量），只是不省流量。
-- **鸿蒙 HAP**：本地用 DevEco 构建（自动签名绑定设备 UDID，不便分发），`3000002 / 3.2.0`。
+- **浏览器 PWA**：下次打开自动换到 Service Worker `nas-notes-v34`；界面没变就强刷一次（旧版 SW 会一直供着旧缓存，刷新一次即可换掉）。
+- **安卓 APK**：装本页附带的 `nas-notes-shell-v3.2.1.apk`（versionCode 32 / versionName 3.2.1）。旧版 APK 连新服务端仍能同步（自动退回全量），只是不省流量。
+- **鸿蒙 HAP**：本地用 DevEco 构建（自动签名绑定设备 UDID，不便分发），`3000003 / 3.2.1`。
 
 ## 附件
 
 | 文件 | 说明 |
 | --- | --- |
-| `nas-notes-shell-v3.2.apk` | 安卓壳，versionCode 31 / versionName 3.2，135,620 B；SHA-256 `03b5355b6d713fc9ad4fef9ac06544325ec5aeb4b73bbd48a6a06bf5cd55b04f` |
+| `nas-notes-shell-v3.2.1.apk` | 安卓壳，versionCode 32 / versionName 3.2.1，135,932 B；SHA-256 `c58269f6a349d9b861d288153d9628cdca2b2a2d6c47b5b48bd27376fd4189be` |
 
 APK 只加载本机 assets 并走原生转发；浏览器 PWA 仍需要 HTTPS（WebCrypto / Service Worker / 麦克风的硬条件）。
 
 ## 质量
 
-17 套零依赖桩测全绿，共 326 项断言：壳内离线流程 53、手机版式 36（含审核回归 6 项）、客户端增量同步 28、UI 21、增量协议 31、账户与服务端 37、富文本 11、壳页面 6、鸿蒙壳静态 10、鸿蒙兼容 17、壳资源 13、搜索索引 13、旧库迁移 16、离线同步 10、md 表格 22、cryptofb 49、随包隐私 3。CI 在 GitHub Actions 上跑不需要浏览器的几套。
+17 套零依赖桩测全绿，共 327 项断言：壳内离线流程 53、手机版式 37（含审核回归 6 项 + 弹窗定位兜底 1 项）、客户端增量同步 28、UI 21、增量协议 31、账户与服务端 37、富文本 11、壳页面 6、鸿蒙壳静态 10、鸿蒙兼容 17、壳资源 13、搜索索引 13、旧库迁移 16、离线同步 10、md 表格 22、cryptofb 49、随包隐私 3。CI 在 GitHub Actions 上跑不需要浏览器的几套。
 
 ## 已知限制
 

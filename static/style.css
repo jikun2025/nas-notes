@@ -489,6 +489,14 @@ dialog::backdrop { background: rgba(16, 22, 40, .5); }
 /* 关掉的弹窗必须彻底不渲染：下面给 .settings-dialog 设了 display:flex，
    那会盖掉 UA 的 dialog:not([open]){display:none}，所以这里用 !important 钉死。 */
 dialog:not([open]) { display: none !important; }
+/* 兜底：只要带 open 就一定是 fixed 层。
+   openDialog() 一定会补 .dialog-fallback，但只要有一条路径漏掉（历史 bug：
+   设置面板用 show() 打开、没有类，于是按 UA 的 absolute 定位掉到页面最底部，
+   遮罩也不会出现），界面就退化成「滚到最下面多出一块关不掉的面板」。 */
+dialog[open] {
+  position: fixed; inset: 0; margin: auto; height: fit-content;
+  max-height: 88vh; overflow: auto; z-index: 420;
+}
 /* 弹窗定位：**现在所有弹窗都走这条路径**（不再用 showModal / show，
    因为 ArkWeb 的 top layer 里弹窗按钮点不动，详见 app.js openDialog 注释）。
    普通 fixed 层 + z-index 压在遮罩(body.dialog-open::before, 410) 之上。 */
