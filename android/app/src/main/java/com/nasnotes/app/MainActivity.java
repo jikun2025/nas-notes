@@ -72,9 +72,11 @@ import java.util.concurrent.atomic.AtomicInteger;
  *    因此 crypto.subtle / IndexedDB / localStorage 全部可用（安全上下文），
  *    应用离线即开，不依赖网络。
  *  - 前端所有 fetch('/api/...') 由 assets 内联注入的 _bridge.js 劫持，
- *    经 NasNative.apiAsync 用原生 HttpURLConnection 转发到用户配置的 NAS 地址
- *    （默认 https://192.168.5.10:28443，caddy 反代 + 自签 CA），绕开 WebView 的混合内容限制。
- *    HTTPS 信任：assets/ca.crt（NAS 自建 CA 公钥）被 pin 进信任链，手机无需安装证书。
+ *    经 NasNative.apiAsync 用原生 HttpURLConnection 转发到用户在「设置 → 连接服务器」
+ *    里配置的 NAS 地址（包内不预填任何地址），绕开 WebView 的混合内容限制。
+ *    HTTPS 信任：默认走系统根证书；NAS 用自签 CA 时由用户导入证书（见 setCa）。
+ *  - 应用免密直入：本机加密库用 getDeviceSecret()（随机设备密钥，只存原生侧）包裹，
+ *    门禁交给系统锁屏/指纹/人脸；NAS 账户密码只存原生 SharedPreferences。
  *  - 传输层只有密文：端到端加密在前端 WebCrypto 完成，原生层只见 ciphertext。
  */
 public class MainActivity extends Activity {
@@ -84,23 +86,19 @@ public class MainActivity extends Activity {
     private static final String PREFS = "nn";
     private static final String PREF_SERVER = "server";
     private static final String PREF_CA = "user_ca";
-    /** 上架包默认「纯本机使用」：不预填任何 NAS 地址（空=本机模式，零联网）。 */
+    /** 设备密钥：本机加密库的包裹层根基，随机生成一次、只存原生侧，绝不进网页存储。 */
+    private static final String PREF_DEV_SECRET = "dev_secret";
+    /** 「连接服务器」时保存的 NAS 账户（原生侧保管，用于自动重新登录）。 */
+    private static final String PREF_SERVER_USER = "server_user";
+    private static final String PREF_SERVER_PASS = "server_pass";
+    /** 上架包不预填任何 NAS 地址（空=本机模式，零联网）；地址由用户在「设置 → 连接服务器」填入。 */
     private static final String DEFAULT_SERVER = "";
 
-    /**
-     * 旧版（≤2.6）默认存的是 http://192.168.5.10:28080；NAS 已把 28080 收紧为仅回环，
-     * 手机上连必失败。读取时把这一精确旧值一次性升级到 HTTPS 反代地址；
-     * 用户自填的其他 http 地址不动（尊重选择）。未配置时返回空串=本机模式。
-     */
+    /** 读取用户配置的 NAS 地址（trim 后返回；未配置返回空串=本机模式）。 */
     private String effectiveServer() {
         String server = prefs.getString(PREF_SERVER, DEFAULT_SERVER);
         if (server == null) server = "";
-        server = server.trim();
-        if (server.equals("http://192.168.5.10:28080")) {
-            server = "https://192.168.5.10:28443";
-            prefs.edit().putString(PREF_SERVER, server).apply();
-        }
-        return server;
+        return server.trim();
     }
     private static final int REQ_FILE = 1001;
     private static final int REQ_MIC = 1002;
@@ -116,50 +114,9 @@ public class MainActivity extends Activity {
     private final AtomicInteger toastSeq = new AtomicInteger();
     private final StringBuilder consoleLog = new StringBuilder();
     private boolean inlineLoaded;
-    /** 内置 CA（assets/ca.crt，作者自家 NAS 的 caddy 反代）固定信任，仅对自家 host 生效。 */
-    private volatile TrustManager[] pinnedTrust;
-    private SSLContext pinnedSslContext;
-    /** 用户导入 CA + 系统根证书叠加的复合信任（他人自签 NAS 用），setCa 后自动重建。 */
+    /** 用户导入 CA + 系统根证书叠加的复合信任（自家自签 NAS 用），setCa 后自动重建。 */
     private volatile SSLContext compositeSslContext;
     private volatile String compositeSource;   // 构建 composite 时用的 PEM，变了就重建
-
-    /**
-     * 内置 CA（assets/ca.crt）pin 进独立 TrustManager——只覆盖「自家 NAS」这一种场景。
-     * ca.crt 缺失/解析失败时置 null，HTTPS 退化为系统默认信任（会失败并提示，不静默放行）。
-     */
-    private synchronized void buildPinnedTrust() {
-        if (pinnedSslContext != null) return;
-        try (InputStream in = getAssets().open("ca.crt")) {
-            CertificateFactory cf = CertificateFactory.getInstance("X509");
-            Certificate ca = cf.generateCertificate(in);
-            KeyStore ks = KeyStore.getInstance(KeyStore.getDefaultType());
-            ks.load(null, null);
-            ks.setCertificateEntry("nn-nas-ca", ca);
-            TrustManagerFactory tmf =
-                    TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
-            tmf.init(ks);
-            TrustManager[] base = tmf.getTrustManagers();
-            for (int i = 0; i < base.length; i++) {
-                if (base[i] instanceof X509TrustManager) {
-                    final X509TrustManager def = (X509TrustManager) base[i];
-                    // 兜底：主机名不匹配时（旧证书 SAN 不含访问主机）仅对自签链做宽松校验，
-                    // 签名校验仍严格走固定 CA，不放宽到任意证书。
-                    base[i] = new X509TrustManager() {
-                        @Override public void checkClientTrusted(X509Certificate[] c, String a) throws java.security.cert.CertificateException { def.checkClientTrusted(c, a); }
-                        @Override public void checkServerTrusted(X509Certificate[] c, String a) throws java.security.cert.CertificateException { def.checkServerTrusted(c, a); }
-                        @Override public X509Certificate[] getAcceptedIssuers() { return def.getAcceptedIssuers(); }
-                    };
-                }
-            }
-            pinnedTrust = base;
-            SSLContext ctx = SSLContext.getInstance("TLS");
-            ctx.init(null, pinnedTrust, new java.security.SecureRandom());
-            pinnedSslContext = ctx;
-        } catch (Exception e) {
-            pinnedTrust = null;
-            pinnedSslContext = null;
-        }
-    }
 
     /** 解析 PEM 文本里的全部证书；一张都解不出来返回 null。 */
     private static java.util.List<X509Certificate> parsePemCerts(String pem) {
@@ -222,21 +179,14 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** 对到 NAS 的 HttpsURLConnection 按目标 host 选择信任：自家→内置 pin；他人→系统根＋导入 CA。 */
+    /** 对到 NAS 的 HttpsURLConnection 选择信任：导入 CA（系统根叠加）；没导入走系统默认。 */
     private void applyNasTls(HttpsURLConnection c, String host) {
         SSLContext ctx = null;
         boolean relaxedVerifier = false;
-        if ("192.168.5.10".equals(host)) {
-            // 作者自家 NAS（内置 ca.crt 对应的地址）：保持 pin，手机无需装证书
-            buildPinnedTrust();
-            ctx = pinnedSslContext;
-            relaxedVerifier = ctx != null;
-        } else {
-            // 别人家的 NAS：优先「系统根 + 用户导入 CA」；没导入就用系统默认（公开证书照常）。
-            // 自签证书常见 CN/SAN 与 IP 不一致，签名由导入 CA 把关后主机名做非空校验即可。
-            SSLContext cc = compositeContext(prefs.getString(PREF_CA, ""));
-            if (cc != null) { ctx = cc; relaxedVerifier = true; }
-        }
+        // 优先「系统根 + 用户导入 CA」；没导入就用系统默认（公开证书照常）。
+        // 自签证书常见 CN/SAN 与 IP 不一致，签名由导入 CA 把关后主机名做非空校验即可。
+        SSLContext cc = compositeContext(prefs.getString(PREF_CA, ""));
+        if (cc != null) { ctx = cc; relaxedVerifier = true; }
         if (ctx == null) return; // 走系统默认信任，失败会走既有错误提示
         c.setSSLSocketFactory(ctx.getSocketFactory());
         if (!relaxedVerifier) return;
@@ -815,6 +765,66 @@ public class MainActivity extends Activity {
         public void clearCa() {
             prefs.edit().remove(PREF_CA).apply();
             synchronized (MainActivity.this) { compositeSslContext = null; compositeSource = null; }
+        }
+
+        /**
+         * 设备密钥（免密形态的根基）：首次调用时用 SecureRandom 生成 64 位十六进制
+         * 随机串并持久化在 SharedPreferences；之后每次原样返回。
+         * 前端用它做 PBKDF2 派生本机库的包裹密钥——密钥只存在原生沙箱里，
+         * 网页存储（IndexedDB/localStorage）里永远拿不到它。清除应用数据即丢失，
+         * 对应前端「broken」兜底页（可从 NAS 同步回来或导入备份恢复）。
+         */
+        @JavascriptInterface
+        public String getDeviceSecret() {
+            String cached = prefs.getString(PREF_DEV_SECRET, null);
+            if (cached != null && cached.length() >= 64) return cached;
+            byte[] buf = new byte[32];
+            new java.security.SecureRandom().nextBytes(buf);
+            StringBuilder sb = new StringBuilder(64);
+            for (byte b : buf) sb.append(String.format("%02x", b));
+            String secret = sb.toString();
+            prefs.edit().putString(PREF_DEV_SECRET, secret).apply();
+            return secret;
+        }
+
+        /**
+         * 「连接服务器」表单里的账户与密码：只存原生 SharedPreferences（不进网页存储），
+         * 供会话失效后静默重新登录。传空账户名=清除。返回 "ok" 或中文原因。
+         */
+        @JavascriptInterface
+        public String saveServerAccount(String username, String password) {
+            if (username == null || username.trim().isEmpty()) {
+                prefs.edit().remove(PREF_SERVER_USER).remove(PREF_SERVER_PASS).apply();
+                return "ok";
+            }
+            String u = username.trim();
+            if (u.length() > 64) return "账户名过长";
+            prefs.edit()
+                    .putString(PREF_SERVER_USER, u)
+                    .putString(PREF_SERVER_PASS, password == null ? "" : password)
+                    .apply();
+            return "ok";
+        }
+
+        /** 返回 JSON {"username":...,"password":...}；未保存过返回空串。 */
+        @JavascriptInterface
+        public String getServerAccount() {
+            String u = prefs.getString(PREF_SERVER_USER, null);
+            if (u == null || u.isEmpty()) return "";
+            String p = prefs.getString(PREF_SERVER_PASS, "");
+            try {
+                JSONObject o = new JSONObject();
+                o.put("username", u);
+                o.put("password", p == null ? "" : p);
+                return o.toString();
+            } catch (Exception e) {
+                return "";
+            }
+        }
+
+        @JavascriptInterface
+        public void clearServerAccount() {
+            prefs.edit().remove(PREF_SERVER_USER).remove(PREF_SERVER_PASS).apply();
         }
 
         /**

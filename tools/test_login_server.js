@@ -69,14 +69,14 @@ const FLOW = String.raw`(async () => {
     step('非法地址没有写进原生配置', window.__nasSet.length === 0, JSON.stringify(window.__nasSet));
 
     // 2) 只填 IP:端口 + 尾斜杠 → 归一化后保存，再登录
-    input.value = ' 192.168.5.10:28080/ ';
+    input.value = ' 10.0.0.20:28080/ ';
     document.getElementById('passphraseInput').value = 'admin';
     document.getElementById('unlockBtn').click();
     const saved = await waitFor(() => window.__nasSet.length > 0, 5000);
     info.saved = window.__nasSet.slice();
-    step('登录前把地址写进原生配置', saved && info.saved[0] === 'http://192.168.5.10:28080', JSON.stringify(info.saved));
+    step('登录前把地址写进原生配置', saved && info.saved[0] === 'https://10.0.0.20:28080', JSON.stringify(info.saved));
     info.inputAfter = input.value;
-    step('输入框回填归一化后的地址', info.inputAfter === 'http://192.168.5.10:28080', info.inputAfter);
+    step('输入框回填归一化后的地址', info.inputAfter === 'https://10.0.0.20:28080', info.inputAfter);
 
     // 3) 登录请求必须真的发到 NAS（这里由本地服务代答 401）
     const rejected = await waitFor(() => /不正确/.test(errText()), 10000);

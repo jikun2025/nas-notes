@@ -282,6 +282,45 @@ const PHASE_SETTINGS = String.raw`(async () => {
     step('能滚到底看到面板最后一行',
       rect(lastRow).bottom <= rect(body).bottom + 2, 'lastBottom=' + Math.round(rect(lastRow).bottom) + ' bodyBottom=' + Math.round(rect(body).bottom));
     step('滚到底后保存按钮没被顶走', rect(foot).bottom <= window.innerHeight + 1);
+
+    // ---- 上架审核回归（华为报「设置里取消/保存无响应，关不掉弹窗」）----
+    // 根因是 ArkWeb 把 <dialog> 放进 top layer 后按钮命中测试失效。现在弹窗
+    // 一律走「open 属性 + 普通 fixed 层」，这里逐条钉住：不进模态层、按钮在最上层、
+    // 取消/保存/× 三个出口都能关掉。
+    step('弹窗不进浏览器模态层（不用 showModal）', dlg.matches(':modal') === false,
+      'modal=' + dlg.matches(':modal'));
+
+    const probeHit = (id) => {
+      const el = document.getElementById(id);
+      const r = rect(el);
+      const hit = document.elementFromPoint(Math.round(r.left + r.width / 2), Math.round(r.top + r.height / 2));
+      return { el, hit, ok: Boolean(hit && (hit === el || el.contains(hit))) };
+    };
+    const hitCancel = probeHit('cancelSettings');
+    step('「取消」按钮处在命中测试最上层', hitCancel.ok,
+      'hit=' + (hitCancel.hit ? (hitCancel.hit.id || hitCancel.hit.className || hitCancel.hit.tagName) : 'null'));
+    hitCancel.el.click();
+    await new Promise((r) => setTimeout(r, 320));
+    info.closedByCancel = !dlg.hasAttribute('open') && !document.body.classList.contains('dialog-open');
+    step('点「取消」能关掉设置弹窗', info.closedByCancel);
+
+    // 重新打开，换「保存设置」这条出口
+    document.getElementById('settingsBtn').click();
+    await waitFor(() => dlg.hasAttribute('open'), 5000);
+    await new Promise((r) => setTimeout(r, 220));
+    const hitSave = probeHit('saveSettings');
+    step('「保存设置」按钮处在命中测试最上层', hitSave.ok);
+    hitSave.el.click();
+    await new Promise((r) => setTimeout(r, 320));
+    step('点「保存设置」也能关掉设置弹窗', !dlg.hasAttribute('open'));
+
+    // 第三条出口：右上角 ×
+    document.getElementById('settingsBtn').click();
+    await waitFor(() => dlg.hasAttribute('open'), 5000);
+    await new Promise((r) => setTimeout(r, 220));
+    probeHit('settingsClose').el.click();
+    await new Promise((r) => setTimeout(r, 320));
+    step('点「×」也能关掉设置弹窗', !dlg.hasAttribute('open'));
     return JSON.stringify(info);
   } catch (error) {
     info.error = String(error && error.message);

@@ -21,11 +21,11 @@
       <div id="lockServerBlock" class="lock-server" hidden>
         <label for="lockServerInput">NAS 地址</label>
         <div class="lock-server-row">
-          <input id="lockServerInput" type="text" inputmode="url" autocapitalize="none" spellcheck="false" placeholder="https://192.168.5.10:28443">
+          <input id="lockServerInput" type="text" inputmode="url" autocapitalize="none" spellcheck="false" placeholder="https://nas.example.com:28443">
           <button id="lockServerTestBtn" class="ghost small" type="button">测试</button>
         </div>
         <p id="lockServerState" class="lock-server-state" hidden></p>
-        <p class="muted tiny">填 NAS 的地址，例如 https://192.168.5.10:28443（HTTP 也支持）。只有「登录并同步」会连它；留空则沿用上次保存的地址。</p>
+        <p class="muted tiny">填 NAS 的地址，例如 https://nas.example.com:28443 或 http://10.0.0.20:28080。只有「登录并同步」会连它；留空则沿用上次保存的地址。</p>
       </div>
       <label id="usernameLabel" for="usernameInput">账户名</label>
       <input id="usernameInput" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="默认 admin">
@@ -204,7 +204,7 @@
     <div class="settings-shell">
       <nav class="settings-nav" aria-label="设置分类">
         <button type="button" class="settings-nav-item active" data-settings-panel="account"><span>👤</span>账户</button>
-        <button type="button" class="settings-nav-item" data-settings-panel="sync"><span>↻</span>同步</button>
+        <button type="button" class="settings-nav-item" data-settings-panel="sync"><span>↻</span>连接服务器</button>
         <button type="button" class="settings-nav-item" data-settings-panel="appearance"><span>◐</span>外观与编辑</button>
         <button type="button" class="settings-nav-item" data-settings-panel="data"><span>▤</span>数据与备份</button>
         <button type="button" class="settings-nav-item" data-settings-panel="about"><span>ⓘ</span>关于</button>
@@ -230,12 +230,12 @@
             <p class="muted">保存后旧会话立即失效，本机将用新账户自动重新登录。</p>
           </section>
           <section class="settings-panel" data-panel="sync" hidden>
-            <p class="settings-lead">便签始终先加密写入本机，断网也能读写。与 NAS 的同步只在你点「立即同步」时发生，不会在后台自动联网。</p>
+            <p class="settings-lead">便签始终先加密写入本机，断网也能读写。应用本身不需要密码（门禁交给手机锁屏/指纹/人脸）；只有要连 NAS 时，才在这里填服务器地址、账户密码，HTTPS 自签服务还可导入自家 CA 证书。同步只在你点「立即同步」时发生，不会在后台自动联网。</p>
             <div class="sync-card">
               <div class="sync-card-row"><span>本机数据</span><b id="syncLocalState">未解锁</b></div>
               <div class="sync-card-row"><span>待同步</span><b id="syncPendingCount">—</b></div>
               <div class="sync-card-row"><span>上次同步</span><b id="syncLastAt">从未同步</b></div>
-              <div class="sync-card-row"><span>服务器</span><b id="syncServerAddr">同源（浏览器直连）</b></div>
+              <div class="sync-card-row"><span>已连接服务器</span><b id="syncServerAddr">同源（浏览器直连）</b></div>
             </div>
             <button id="syncNowSettings" class="primary block" type="button">↻ 立即与 NAS 同步</button>
             <p id="syncMsg" class="muted tiny" hidden></p>

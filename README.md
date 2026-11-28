@@ -42,15 +42,15 @@ git clone https://gh-proxy.com/https://github.com/jikun2025/nas-notes.git
 git clone https://github.kkgithub.com/jikun2025/nas-notes.git
 ```
 
-安卓 APK 挂在 Releases：从 [Releases](https://github.com/jikun2025/nas-notes/releases) 下载 `nas-notes-shell-v2.9.apk`；下载慢时同样加前缀：
+安卓 APK 挂在 Releases：从 [Releases](https://github.com/jikun2025/nas-notes/releases) 下载 `nas-notes-shell-v3.0.apk`；下载慢时同样加前缀：
 
 ```
-https://ghfast.top/https://github.com/jikun2025/nas-notes/releases/download/v2.9/nas-notes-shell-v2.9.apk
+https://ghfast.top/https://github.com/jikun2025/nas-notes/releases/download/v3.0/nas-notes-shell-v3.0.apk
 ```
 
-> 手机壳 v2.9 起「本机优先」：首次启动只设本机密码、全程不联网；要连 NAS 时打开「设置 → 同步」填地址（自己的 HTTPS 服务用自签证书的话，同一页可导入 CA 证书）。
+> 手机壳 v3.0 起**应用内没有密码**：门禁交给手机锁屏/指纹/人脸，本机加密库由原生设备密钥自动包裹，打开即用；旧版本用密码建的库会在首次启动时让你输一次旧密码完成迁移。要连 NAS 时打开「设置 → 连接服务器」填地址、账户、密码（HTTPS 自签服务可在同一页导入自家 CA 证书），密码只存原生沙箱、不进网页存储。
 
-> 「设置 → 同步」里的地址示例只是作者环境，请改成你自己的 `NAS_IP:端口`；填过一次会存进原生配置。更推荐从源码自己 `gradle assembleRelease` 打包，签名在你手里。
+> 「设置 → 连接服务器」里的地址示例只是占位，请填你自己的 `NAS_IP:端口`；填过一次会存进原生配置。更推荐从源码自己 `gradle assembleRelease` 打包，签名在你手里。
 
 ## 功能
 

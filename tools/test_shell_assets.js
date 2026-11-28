@@ -59,8 +59,6 @@ ok('原生桥把 headers JSON 解析成对象，status=0 明确按网络失败�
   assert.match(bridge, /JSON\.parse\(respHeaders\)/);
   assert.match(bridge, /if \(!status\) \{/);
   assert.match(bridge, /new Response\(text, \{ status: status, headers: hdrs \}\)/);
-  // 设置里的"连接测试"必须走被劫持的 fetch，否则请求落到虚拟域永远成功
-  assert.match(bridge, /window\.fetch\(ASSET_ORIGIN \+ '\/api\/health'\)/);
 });
 
 ok('虚拟域返回首页也注入壳标记与桥（否则 /api/ 会 502 Bridge Unavailable）', () => {
@@ -94,12 +92,37 @@ ok('用户 CA 桥：setCa 校验 PEM、getCa/clearCa 齐备，存 SharedPreferen
   assert.match(java, /putString\(PREF_CA, pem\)/);
 });
 
-ok('按地址选择信任：自家 host 用内置 pin，他人 NAS 用「系统根＋导入 CA」叠加', () => {
-  assert.match(java, /if \("192\.168\.5\.10"\.equals\(host\)\)/);
+ok('HTTPS 信任：不内置任何 CA/pin，导入过 CA 走「系统根＋导入 CA」叠加', () => {
+  // 内置 pin 整体退场（v3.0）：不得再读 assets 里的 ca.crt，也不得按硬编码主机放行
+  assert.doesNotMatch(java, /getAssets\(\)\.open\("ca\.crt"\)/);
+  assert.doesNotMatch(java, /buildPinnedTrust/);
+  assert.doesNotMatch(java, /pinnedTrust|pinnedSslContext/);
+  assert.doesNotMatch(java, /192\.168\./);
   assert.match(java, /compositeContext\(prefs\.getString\(PREF_CA, ""\)\)/);
   // 复合信任：系统默认根与用户 CA 都参与验签（try 一个 catch 再试另一个）
   assert.match(java, /sysTmf\.init\(\(KeyStore\) null\)/);
   assert.match(java, /a\.checkServerTrusted\(chain, authType\); \} catch[\s\S]*?b\.checkServerTrusted/);
+});
+
+ok('设备密钥与服务器账户桥齐备（免密直入的根基，只存 SharedPreferences）', () => {
+  assert.match(java, /public String getDeviceSecret\(\)/);
+  assert.match(java, /private static final String PREF_DEV_SECRET = "dev_secret";/);
+  assert.match(java, /new java\.security\.SecureRandom\(\)\.nextBytes\(buf\)/);
+  assert.match(java, /public String saveServerAccount\(String username, String password\)/);
+  assert.match(java, /public String getServerAccount\(\)/);
+  assert.match(java, /public void clearServerAccount\(\)/);
+});
+
+ok('桥接脚本注入「连接服务器」表单（地址+账户+密码+连接并同步）', () => {
+  assert.match(bridge, /id="nn-server-input"/);
+  assert.match(bridge, /id="nn-user-input"/);
+  assert.match(bridge, /id="nn-pass-input"/);
+  assert.match(bridge, /id="nn-connect-btn"/);
+  assert.match(bridge, /window\.NnConnectServer\(\{ server: v, username: user, password: pass \}\)/);
+  assert.match(bridge, /NasNative[\s\S]{0,400}getServerAccount|getServerAccount\(\)/);
+  // 旧「保存并测试连接」行（曾预填作者内网地址）必须消失
+  assert.doesNotMatch(bridge, /保存并测试/);
+  assert.doesNotMatch(bridge, /192\.168\./);
 });
 
 ok('桥接脚本注入「导入本地 CA 证书」控件并处理状态/清除/事件刷新', () => {

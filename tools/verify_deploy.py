@@ -1,6 +1,6 @@
 """部署验证：对着指定 nas-notes 实例跑一遍增量同步协议全流程。
 
-用法：python tools/verify_deploy.py http://192.168.5.10:28081
+用法：python tools/verify_deploy.py http://127.0.0.1:28081
 只读/写临时实例，不碰线上数据。
 """
 import json

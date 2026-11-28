@@ -171,6 +171,7 @@ const noteIndex = (typeof NN_INDEX !== 'undefined' && NN_INDEX.create)
 const CURSOR_META_KEY = 'sync_cursor';   // 增量同步游标，只存 rev/epoch/salt
 let cryptoKey = null;           // 保险库密钥 wkey（CryptoKey），仅内存
 let wkeyBytes = null;           // wkey 原始字节（仅内存，改口令时重新包裹用）
+let shellGateMode = '';         // 壳内兜底锁屏形态：'' | 'migrate'（旧密码库迁移）| 'broken' | 'bootfail'
 let sessionToken = '';          // 登录换取的会话令牌（本机 localStorage）
 let accountName = '';           // 当前登录账户名（仅显示用）
 let vaultMeta = null;           // {salt, wrapped, iterations, version}
@@ -183,9 +184,22 @@ let audioQuality = 'balanced';
 // 所以壳内默认「手动」；浏览器直连 NAS 时保持自动。
 const IS_SHELL = Boolean(window.__NN_SHELL__);
 const DEFAULT_SYNC_MODE = IS_SHELL ? 'manual' : 'auto';
-// 壳内「本机优先」：上架包首次启动没有任何 NAS 概念——锁屏只设本机密码，
-// 全程不联网。NAS 地址、账户、CA 证书全部放到「设置 → 同步」。
-// 老装（升级上来）的如果已经配置过 NAS 地址，仍保留「解锁 + 可选在线登录」两条路。
+// 壳内（安卓/鸿蒙上架形态）没有应用内密码：进入应用的权限就是系统锁屏
+// （设备密码 / 指纹 / 人脸；鸿蒙侧可再叠加「应用锁」）。本机加密库用原生
+// 设备密钥自动包裹，首次启动直接进入，全程不联网、零 NAS 概念。
+// NAS 地址、账户名、密码、CA 证书全部在「设置 → 连接服务器」里填写。
+// 判断只看原生桥有没有设备密钥能力，与是否配置过 NAS 无关——
+// 连过 NAS 的老装机重启后同样免密直入（包裹层已迁成设备密钥）。
+const DEVICE_KEY_OK = (function () {
+  if (!IS_SHELL) return false;
+  try {
+    const api = window.NasNative;
+    return Boolean(api && typeof api.getDeviceSecret === 'function');
+  } catch (error) {
+    return false;
+  }
+})();
+// 兼容旧命名：表示「本机优先、没有 NAS 概念」的首启形态
 const LOCAL_FIRST = (function () {
   if (!IS_SHELL) return false;
   try {
@@ -578,7 +592,7 @@ function normalizeServerUrl(raw) {
 function fillLockServerInput() {
   if (!els.lockServerBlock) return;
   const api = nativeServerApi();
-  // 壳内锁屏不再出现 NAS 地址（本机优先）：地址在「设置 → 同步」里由桥接注入。
+  // 壳内锁屏不再出现 NAS 地址（本机优先）：地址在「设置 → 连接服务器」里由桥接注入。
   // 只有「已配置过 NAS 的老装机」在解锁页保留只读回填，避免重填。
   els.lockServerBlock.hidden = !api || LOCAL_FIRST;
   if (!api) return;
@@ -610,7 +624,7 @@ function saveServerFromLockInput() {
   if (!raw) return true;          // 留空沿用上次保存的地址
   const value = normalizeServerUrl(raw);
   if (!value) {
-    showLockError('NAS 地址格式不对，例如 https://192.168.5.10:28443');
+    showLockError('NAS 地址格式不对，例如 https://nas.example.com:28443 或 http://10.0.0.20:28080');
     return false;
   }
   try { api.setServer(value); } catch (error) { console.warn('[NasNotes] setServer failed', error); }
@@ -680,6 +694,13 @@ function handleSessionExpired() {
   localStorage.removeItem('nn-session');
   syncErrorKind = SYNC_ERR_AUTH;
   if (cryptoKey && offlineReady) {
+    updateSyncUI();
+    return;
+  }
+  // 壳内免密形态：会话过期不该把用户踢回锁屏（应用内本来没有密码可输），
+  // 明文与库仍在内存，只是同步会失败——引导去「设置 → 连接服务器」重新连接。
+  if (IS_SHELL && DEVICE_KEY_OK) {
+    toast('服务器会话已失效：请到「设置 → 连接服务器」重新连接');
     updateSyncUI();
     return;
   }
@@ -755,9 +776,33 @@ async function unwrapVault(wrapKey, wrapped) {
 }
 
 // ---------- 本机保险库（离线优先） ----------
-// 手机上必须能完全脱离 NAS 使用：vault（salt + 用密码包裹的 wkey）缓存在本机
-// IndexedDB 里，输入密码就能解出 wkey，不需要任何网络请求。
-// 「仅在本机使用」建的库带 local_only 标记，第一次连上服务器时再上传包裹层。
+// 手机上必须能完全脱离 NAS 使用：vault 缓存在本机 IndexedDB 里。
+// 壳内（LOCAL_FIRST）不再有应用内密码：wkey 用原生设备密钥（桥 getDeviceSecret）
+// 包裹，解锁由系统锁屏/生物识别负责；「dev:true」标记这种形态。
+// 连接 NAS 后另存一份「账户密码包裹层」（serverWrapped，只上行到服务器），
+// 本地这份始终设备密钥包裹——设备丢了密文也读不出。
+// devSecret 只缓存在内存（每次启动从原生桥取一次），绝不落盘。
+let devSecretMemo = null;
+
+function nativeDeviceSecret() {
+  if (!IS_SHELL) return '';
+  const api = window.NasNative;
+  if (!api || typeof api.getDeviceSecret !== 'function') return '';
+  try {
+    const s = String(api.getDeviceSecret() || '');
+    return s.length >= 32 ? s : '';
+  } catch (error) {
+    return '';   // 桥异常：按没有设备密钥处理，走旧密码流程
+  }
+}
+
+async function deviceWrapKey(saltB64) {
+  const secret = nativeDeviceSecret();
+  if (!secret) throw new Error('device secret unavailable');
+  // 与口令派生同参数：设备密钥只是充当「超长口令」，310k PBKDF2 抬高离线爆破成本
+  return deriveKey(secret, saltB64, PBKDF2_ITERATIONS);
+}
+
 async function readLocalVault() {
   try {
     const row = await idbGet(STORE_META, 'vault');
@@ -784,11 +829,42 @@ async function unlockWithLocalVault(passphrase) {
   return key;
 }
 
-// 完全本机的加密库：本机生成 salt 与 wkey，密码只用于包裹。
-// 不写服务端，不需要登录；之后用户主动同步时再把包裹层推上去。
-async function createLocalVault(passphrase) {
+// 壳内免密解锁：用原生设备密钥解开本机包裹层（全程不联网）。
+async function unlockWithDeviceSecret() {
+  const meta = await readLocalVault();
+  if (!meta || !meta.salt || !meta.wrapped) return null;
+  const wrapKey = await deviceWrapKey(meta.salt);
+  const wkey = await unwrapVault(wrapKey, meta.wrapped);
+  const key = await importWkey(wkey);
+  vaultMeta = meta;
+  wkeyBytes = wkey;
+  devSecretMemo = nativeDeviceSecret();
+  return key;
+}
+
+// 旧壳（v2.9 及以前）建的「密码包裹」本机库升级到免密形态：
+// 用旧密码解出 wkey 后，本机包裹层换成设备密钥，其余字段不动。
+// 还没有 serverWrapped——用户之后在「设置 → 连接服务器」里填账户密码时补上。
+async function migrateLocalVaultToDevice() {
+  if (!wkeyBytes || !vaultMeta || !vaultMeta.salt) throw new Error('vault not loaded');
+  const deviceKey = await deviceWrapKey(vaultMeta.salt);
+  vaultMeta = Object.assign({}, vaultMeta, {
+    wrapped: await wrapVault(deviceKey, wkeyBytes),
+    dev: true
+  });
+  await saveLocalVault(vaultMeta);
+  devSecretMemo = nativeDeviceSecret();
+}
+
+// 完全本机的加密库：本机生成 salt 与 wkey。opts.dev=true（壳内）用原生设备密钥
+// 包裹并打 dev 标记（免密直入）；PWA「仅在本机使用」仍用密码包裹。
+// 不写服务端，不需要登录；之后连接 NAS 时再把「账户密码包裹层」推上去。
+async function createLocalVault(passphrase, opts) {
+  const options = opts || {};
   const salt = bytesToB64(crypto.getRandomValues(new Uint8Array(16)));
-  const wrapKey = await deriveKey(passphrase, salt, PBKDF2_ITERATIONS);
+  const wrapKey = options.dev
+    ? await deviceWrapKey(salt)
+    : await deriveKey(passphrase, salt, PBKDF2_ITERATIONS);
   const wkey = randomWkeyBytes();
   const meta = {
     salt,
@@ -797,11 +873,62 @@ async function createLocalVault(passphrase) {
     version: VAULT_VERSION,
     local_only: true
   };
+  if (options.dev) meta.dev = true;
   await saveLocalVault(meta);
   vaultMeta = meta;
   wkeyBytes = wkey;
+  if (options.dev) devSecretMemo = nativeDeviceSecret();
   offlineReady = true;
   return importWkey(wkey);
+}
+
+// 上行用的「账户密码包裹层」：同一 salt、PBKDF2(账户密码) 包裹当前 wkey。
+// 只在连接 NAS 或改密时生成；本地 wrapped 保持设备密钥包裹不变。
+async function buildServerWrapped(password) {
+  const wrapKey = await deriveKey(password, vaultMeta.salt, vaultMeta.iterations || PBKDF2_ITERATIONS);
+  return wrapVault(wrapKey, wkeyBytes);
+}
+
+// 连接成功后的收尾：本机 wrapped 换成设备密钥包裹（壳内），并记下账户密码包裹层。
+// salt 只有一个（本机与服务器共用），改密/接管远端库时整体重包裹。
+async function rekeyLocalVaultForDevice(password) {
+  if (!wkeyBytes || !vaultMeta || !vaultMeta.salt) throw new Error('vault not loaded');
+  const deviceKey = await deviceWrapKey(vaultMeta.salt);
+  vaultMeta = Object.assign({}, vaultMeta, {
+    wrapped: await wrapVault(deviceKey, wkeyBytes),
+    dev: true,
+    serverWrapped: await buildServerWrapped(password),
+    local_only: false
+  });
+  await saveLocalVault(vaultMeta);
+  devSecretMemo = nativeDeviceSecret();
+}
+
+// 把「账户密码包裹层」推到服务器（远端还没有库时）。notes 密文用 wkey，
+// 两端 wkey 相同即可互解，所以上行的包裹层只影响「服务器端谁能解锁」。
+// 壳内免密形态绝不上行设备密钥包裹层——那层只有本机解得开，
+// 推上去等于把一把谁都用不了的钥匙挂上服务器。
+async function uploadServerWrapped() {
+  if (!vaultMeta || !vaultMeta.salt) throw syncFail(SYNC_ERR_VAULT, '本机还没有加密库');
+  if (vaultMeta.dev && !vaultMeta.serverWrapped) {
+    throw syncFail(SYNC_ERR_VAULT, '本机库还没绑定服务器账户密码：请先在「设置 → 连接服务器」里填写地址、账户和密码完成连接');
+  }
+  const layer = vaultMeta.serverWrapped || vaultMeta.wrapped;
+  if (!layer) throw syncFail(SYNC_ERR_VAULT, '本机没有可上传的包裹层');
+  const resp = await fetch('/api/meta', {
+    method: 'PUT', headers: authHeaders(),
+    body: JSON.stringify({
+      salt: vaultMeta.salt, wrapped: layer,
+      iterations: vaultMeta.iterations || PBKDF2_ITERATIONS,
+      version: vaultMeta.version || VAULT_VERSION,
+      replace: Boolean(vaultMeta.local_only)
+    })
+  });
+  if (resp.status === 401) throw syncFail(SYNC_ERR_AUTH, '服务器登录已失效');
+  if (resp.status === 409) throw syncFail(SYNC_ERR_VAULT, '服务器上已有加密库');
+  if (!resp.ok) throw syncFail(SYNC_ERR_HTTP, '上传加密库失败: HTTP ' + resp.status);
+  vaultMeta = Object.assign({}, vaultMeta, { local_only: false });
+  await saveLocalVault(vaultMeta);
 }
 
 // ---------- 附件（明文仅在内存，随便签一起加密） ----------
@@ -1054,7 +1181,58 @@ function stopRecording() {
   if (mediaRecorder && mediaRecorder.state !== 'inactive') mediaRecorder.stop();
 }
 
-async function toggleRecording() {
+// 壳内麦克风权限：安装包里的声明只是「允许申请」。ohos.permission.MICROPHONE
+// 是 user_grant，必须原生侧 requestPermissionsFromUser 拿到用户授权，否则
+// getUserMedia 直接 NotAllowedError（上架审核报的「点击录音提示无法录音」就是它）。
+// 安卓壳在 WebChromeClient.onPermissionRequest 里边请求边放行；鸿蒙 ArkWeb 的
+// onPermissionRequest 只放行网页层，管不到系统授权，所以补了桥方法：
+//   requestMic() —— 查询状态，未授权时顺带弹系统授权框
+//   micState()   —— 只查询状态
+//
+// 关键在于**手势**：ArkWeb 要求 getUserMedia 在用户点击的同步窗口内发起，
+// 若在它前面 await 一个「等用户点允许」的定时器，激活态就被吃掉、照样失败。
+// 所以分成两条路——
+//   已授权：不 await、不跨任务，直接把 getUserMedia 放在这次点击里发起；
+//   未授权：先弹系统授权框，用户点「允许」后由 watchMicThenRecord 自动续录
+//          （此时已有系统授权，不再需要激活态）。
+let micWatchTimer = null;
+
+function shellMicState() {
+  const api = window.NasNative;
+  if (!api || typeof api.requestMic !== 'function') return 'granted';   // 老壳：交给 getUserMedia 自己报错
+  try {
+    return String(api.requestMic() || '') || 'prompt';
+  } catch (error) {
+    return 'granted';   // 桥异常不阻塞录音
+  }
+}
+
+// 等用户在系统弹窗里点「允许」，随后自动开始录音（最多 16 秒）
+function watchMicThenRecord() {
+  const api = window.NasNative;
+  if (!api || typeof api.micState !== 'function' || micWatchTimer) return;
+  let tries = 0;
+  micWatchTimer = setInterval(() => {
+    tries += 1;
+    let state = '';
+    try { state = String(api.micState() || ''); } catch (error) { state = ''; }
+    if (state === 'granted') {
+      clearInterval(micWatchTimer);
+      micWatchTimer = null;
+      startRecording();
+      return;
+    }
+    if (state === 'denied' || tries > 40) {
+      clearInterval(micWatchTimer);
+      micWatchTimer = null;
+      if (state === 'denied') {
+        toast('麦克风权限被拒绝：请到「设置 → 应用和元服务 → 轻签 → 权限」里允许「麦克风」');
+      }
+    }
+  }, 400);
+}
+
+function toggleRecording() {
   if (mediaRecorder && mediaRecorder.state !== 'inactive') {
     stopRecording();
     return;
@@ -1065,6 +1243,24 @@ async function toggleRecording() {
   }
   if (!currentPlain()) { toast('请先打开一条便签'); return; }
 
+  if (IS_SHELL) {
+    const state = shellMicState();
+    if (state === 'denied') {
+      toast('麦克风权限已关闭：请到「设置 → 应用和元服务 → 轻签 → 权限」里允许「麦克风」');
+      updateRecordUI(false);
+      return;
+    }
+    if (state !== 'granted') {
+      toast('首次录音需要授权：请在系统提示里点「允许」，随后自动开始录音');
+      watchMicThenRecord();
+      return;
+    }
+  }
+  startRecording();
+}
+
+async function startRecording() {
+  if (mediaRecorder && mediaRecorder.state !== 'inactive') return;
   try {
     // 单声道 + 降噪/回声消除，配合低码率 Opus 可显著缩小语音体积。
     let stream;
@@ -1290,13 +1486,20 @@ const DEFAULT_USERNAME = 'admin';
 
 function showLockScreen(mode) {
   initMode = mode === 'init';
+  // 壳内免密形态（新壳 + 设备密钥可用）：正常情况根本不走锁屏（boot 直接解锁）。
+  // 只有兜底面板会出现：旧密码库迁移（migrate）、设备密钥解不开（broken）、启动异常（bootfail）。
+  if (IS_SHELL && DEVICE_KEY_OK) {
+    showShellGate();
+    return;
+  }
+  // 旧壳（没有设备密钥能力）：仍走密码流程，保持 v2.9 语义。
   // 壳内本机优先：还没配 NAS 地址时，首次进入就是「设置本机密码」，
   // 不是「登录 NAS」。老装机（已配地址）维持原语义。
   const localInit = IS_SHELL && LOCAL_FIRST && initMode;
   els.lockScreen.hidden = false;
   els.lockTitle.textContent = IS_SHELL ? '轻签 · 本机便签' : '登录轻签';
   if (localInit) {
-    els.lockHint.textContent = '第一次使用：设置一个本机密码（至少 8 位）。便签只加密保存在这台设备上，全程不联网；需要多端同步时，再在「设置 → 同步」里连接 NAS。';
+    els.lockHint.textContent = '第一次使用：设置一个本机密码（至少 8 位）。便签只加密保存在这台设备上，全程不联网；需要多端同步时，再在「设置 → 连接服务器」里连接 NAS。';
   } else if (IS_SHELL) {
     els.lockHint.textContent = initMode
       ? '输入密码解锁本机库；也可以用它登录已配置的 NAS。需要同步时点列表顶部的同步状态按钮。'
@@ -1339,6 +1542,100 @@ function showLockError(message) {
   els.lockError.hidden = false;
 }
 
+// ---------- 壳内兜底锁屏（免密形态专用） ----------
+// 正常情况 boot 会用设备密钥直接解锁，不进锁屏。只有三种情况出现这里：
+//   migrate  —— 本机库是旧壳（v2.9 及以前）用密码创建的，输入一次旧密码迁移成设备密钥包裹
+//   broken   —— 设备密钥解不开本机库（清除过应用数据/换机），只能清空重建
+//   bootfail —— boot 自动解锁过程异常
+// 面板里没有账户名/地址/确认框：那些都在「设置 → 连接服务器」里。
+function showShellGate() {
+  els.lockScreen.hidden = false;
+  els.lockTitle.textContent = '轻签 · 本机便签';
+  const migrate = shellGateMode === 'migrate';
+  els.lockHint.textContent = migrate
+    ? '这台设备上的便签库是旧版本用密码创建的。输入当初设置的本机密码完成一次性迁移；之后便签库由设备密钥自动保护，开门禁（锁屏/指纹/人脸）后直接进入，不再需要应用密码。'
+    : '本机便签库无法自动解锁（通常是清除过应用数据或更换了设备，设备密钥已丢）。如果 NAS 上有备份，连接服务器后会自动同步回来；也可以清空本机重建一个空库。';
+  if (els.lockServerBlock) els.lockServerBlock.hidden = true;
+  if (els.usernameLabel) els.usernameLabel.hidden = true;
+  els.usernameInput.hidden = true;
+  els.confirmLabel.hidden = true;
+  els.confirmInput.hidden = true;
+  els.lockLocalBtn.hidden = true;
+  if (els.lockOfflineNote) els.lockOfflineNote.hidden = true;
+  els.passphraseLabel.hidden = !migrate;
+  els.passphraseInput.hidden = !migrate;
+  els.unlockBtn.hidden = !migrate;
+  els.unlockBtn.textContent = '迁移并进入';
+  els.resetVaultBtn.hidden = migrate;
+  els.resetPanel.hidden = true;
+  els.resetConfirmInput.value = '';
+  els.lockError.hidden = true;
+  if (migrate) els.passphraseInput.value = '';
+  offlineReady = Boolean(vaultMeta && vaultMeta.wrapped);
+  setBadge(migrate ? '需要旧密码' : '无法解锁');
+  if (migrate) setTimeout(() => els.passphraseInput.focus(), 0);
+}
+
+// 壳内兜底面板的「迁移并进入」：旧密码解本机库 → 立刻换成设备密钥包裹。
+async function handleShellGateUnlock() {
+  if (shellGateMode !== 'migrate') return;
+  const passphrase = els.passphraseInput.value;
+  els.lockError.hidden = true;
+  if (!passphrase) return showLockError('请输入旧版本机密码');
+  els.unlockBtn.disabled = true;
+  try {
+    const localKey = await unlockWithLocalVault(passphrase);
+    if (!localKey) {
+      shellGateMode = 'broken';
+      showShellGate();
+      showLockError('这个密码解不开本机库。可在下方「忘记密码？」清空重建（NAS 上的数据不受影响）。');
+      return;
+    }
+    await migrateLocalVaultToDevice();
+    accountName = '本机';
+    await afterUnlock(localKey);
+    toast('已迁移为设备密钥保护：以后解锁手机后直接进入');
+  } catch (error) {
+    showLockError('密码不正确：本机库只能用它当初设置的密码解锁');
+  } finally {
+    els.unlockBtn.disabled = false;
+  }
+}
+
+// 壳内免密启动：设备密钥直接解开本机库；没有库就现建一个设备密钥保护的库。
+// 只有旧密码库（migrate）、解不开（broken）、异常（bootfail）才落到兜底锁屏。
+async function shellAutoUnlock() {
+  shellGateMode = '';
+  let key = null;
+  try {
+    if (vaultMeta && vaultMeta.salt && vaultMeta.wrapped) {
+      if (vaultMeta.dev) {
+        key = await unlockWithDeviceSecret();
+      } else {
+        // 旧壳（v2.9 及以前）建的密码包裹库：等用户输一次旧密码迁移。
+        shellGateMode = 'migrate';
+      }
+    } else if (DEVICE_KEY_OK) {
+      // 第一次使用：不询问任何密码，直接建一个由设备密钥保护的库。
+      key = await createLocalVault('', { dev: true });
+      accountName = '本机';
+    }
+  } catch (error) {
+    console.warn('[NasNotes] shell auto unlock failed', error);
+    key = null;
+    if (!shellGateMode) shellGateMode = vaultMeta && vaultMeta.salt ? 'broken' : 'bootfail';
+  }
+  if (key) {
+    if (!accountName) accountName = '本机';
+    await afterUnlock(key);
+    return;
+  }
+  showShellGate();
+  if (shellGateMode === 'bootfail') {
+    showLockError('本机便签初始化失败：' + ((vaultMeta && vaultMeta.salt) ? '设备密钥解不开现有库，可清空重建。' : '请重启应用，若反复失败请清空数据重建。'));
+  }
+}
+
 // 普通账户登录：账户名 + 密码 → 服务端校验（哈希入库）→ 会话令牌。
 // 不依赖 WebCrypto：局域网 HTTP / 安卓 WebView 下也能稳定登录。
 async function loginAccount(username, password) {
@@ -1372,6 +1669,20 @@ async function fetchMeta() {
 
   const meta = await response.json();
   if (meta.initialized) {
+    // 壳内免密形态（dev）：本机 wrapped 是设备密钥包裹的，绝不能用服务器上的
+    // 「账户密码包裹层」覆盖，否则下次开机设备密钥解不开。服务器层只进 serverWrapped。
+    if (vaultMeta && vaultMeta.dev) {
+      if (vaultMeta.salt === meta.salt) {
+        vaultMeta = Object.assign({}, vaultMeta, {
+          serverWrapped: meta.wrapped || vaultMeta.serverWrapped || '',
+          iterations: vaultMeta.iterations || meta.iterations,
+          version: vaultMeta.version || meta.version
+        });
+        await saveLocalVault(vaultMeta);
+      }
+      // salt 不同：什么都不覆盖，交由调用方（sync）判断并停止
+      return meta;
+    }
     // 本机若是「仅本机使用」建的库、且服务器是另一套密钥，绝不悄悄覆盖本机包裹层，
     // 否则本机笔记会立刻解不开。交由调用方提示用户处理。
     const localOnly = vaultMeta && vaultMeta.local_only;
@@ -1569,6 +1880,11 @@ async function unlockOnline(username, passphrase) {
 }
 
 async function handleUnlock() {
+  // 壳内免密形态：锁屏只可能是兜底面板（旧库迁移/损坏），没有常规解锁流程。
+  if (IS_SHELL && DEVICE_KEY_OK) {
+    await handleShellGateUnlock();
+    return;
+  }
   const username = (els.usernameInput.value || '').trim() || DEFAULT_USERNAME;
   const passphrase = els.passphraseInput.value;
   els.lockError.hidden = true;
@@ -1766,6 +2082,23 @@ async function lockApp() {
   els.attachmentList.innerHTML = '';
   els.attachCount.textContent = '';
   document.querySelectorAll('.image-lightbox').forEach((node) => node.remove());
+  // 壳内免密形态：门禁在系统侧（锁屏/指纹/人脸），应用内不设密码。
+  // 点「锁定」= 立刻清掉内存明文再用设备密钥重新解锁（几秒的派生开销），
+  // 语义是「现在起内存里没有明文可读」；真正的出门禁靠退回后台/锁屏。
+  if (IS_SHELL && DEVICE_KEY_OK) {
+    try {
+      const key = await unlockWithDeviceSecret();
+      if (key) {
+        await afterUnlock(key);
+        toast('内存明文已清除，库重新解锁');
+        return;
+      }
+      shellGateMode = 'broken';
+    } catch (error) {
+      console.warn('[NasNotes] shell re-unlock failed', error);
+      shellGateMode = 'broken';
+    }
+  }
   showLockScreen('unlock');
 }
 
@@ -1864,22 +2197,9 @@ async function readServerVault() {
   return response.json();
 }
 
-// 「仅本机使用」的库第一次连上服务器时把包裹层推上去，之后两端就是同一套密钥。
-async function uploadLocalVault() {
-  const resp = await fetch('/api/meta', {
-    method: 'PUT', headers: authHeaders(),
-    body: JSON.stringify({
-      salt: vaultMeta.salt, wrapped: vaultMeta.wrapped,
-      iterations: vaultMeta.iterations, version: vaultMeta.version,
-      replace: Boolean(vaultMeta.local_only)
-    })
-  });
-  if (resp.status === 401) throw syncFail(SYNC_ERR_AUTH, '服务器登录已失效');
-  if (resp.status === 409) throw syncFail(SYNC_ERR_VAULT, '服务器上已有加密库');
-  if (!resp.ok) throw syncFail(SYNC_ERR_HTTP, '上传加密库失败: HTTP ' + resp.status);
-  vaultMeta = Object.assign({}, vaultMeta, { local_only: false });
-  await saveLocalVault(vaultMeta);
-}
+// 兼容旧调用：uploadLocalVault 已废弃——壳内设备密钥包裹层绝不上行，
+// 统一走 uploadServerWrapped（只上行「账户密码包裹层」）。
+// （保留名字给旧桩测引用，实际转发。）
 
 async function sync() {
   if (syncing || !cryptoKey) return false;
@@ -1890,14 +2210,16 @@ async function sync() {
   setBadge('同步中…');
   updateSyncUI();
   try {
-    // 0) 库一致性。服务器还没有库就上传本机库；服务器是另一套库就停下，
+    // 0) 库一致性。服务器还没有库就上传「账户密码包裹层」；服务器是另一套库就停下，
     //    绝不把本机密文推进去（推过去别的设备也解不开）。
     const meta = await readServerVault();
     if (!meta.initialized) {
-      await uploadLocalVault();
+      await uploadServerWrapped();
     } else if (vaultMeta && meta.salt && vaultMeta.salt !== meta.salt) {
       throw syncFail(SYNC_ERR_VAULT, '本机与服务器的加密库不是同一套密钥');
     } else if (vaultMeta && vaultMeta.local_only) {
+      // dev（壳内免密）形态走到这里说明已经连接过（salt 已对齐）：
+      // 去掉 local_only 标记，本机密文可以上行。
       vaultMeta = Object.assign({}, vaultMeta, { local_only: false });
       await saveLocalVault(vaultMeta);
     }
@@ -2045,12 +2367,12 @@ async function doManualSync() {
     return;
   }
   if (syncing) return;
-  // 壳里还没配置 NAS 地址：不盲发请求，直接引导到「设置 → 同步」（那里能填地址、导入 CA）。
+  // 壳里还没配置 NAS 地址：不盲发请求，直接引导到「设置 → 连接服务器」。
   if (IS_SHELL && nativeServerApi()) {
     let configured = '';
     try { configured = String(nativeServerApi().getServer() || '').trim(); } catch (error) { /* 按未配置处理 */ }
     if (!configured) {
-      toast('尚未连接 NAS：请在「设置 → 同步」填写 NAS 地址');
+      toast('尚未连接服务器：请在「设置 → 连接服务器」填写地址、账户和密码');
       openSettingsTo('sync');
       return;
     }
@@ -2064,18 +2386,35 @@ async function doManualSync() {
     if (note) await queueUpsert(note);
   }
   if (!sessionToken) {
-    const connected = await openSyncLogin();
-    if (!connected) return;
+    if (IS_SHELL && DEVICE_KEY_OK) {
+      // 免密形态：账户密码由原生保管（连接服务器时存的），静默重新登录，
+      // 绝不再弹「输入 NAS 密码」的小框——那个概念已经搬进设置了。
+      const saved = readNativeServerAccount();
+      let relogged = null;
+      if (saved) {
+        try { relogged = await loginAccount(saved.username, saved.password); } catch (error) { /* 按登录失败处理 */ }
+      }
+      if (!relogged) {
+        toast('服务器登录已失效：请在「设置 → 连接服务器」重新连接');
+        openSettingsTo('sync');
+        return;
+      }
+    } else {
+      const connected = await openSyncLogin();
+      if (!connected) return;
+    }
   }
   try {
     await sync();
     toast('已与 NAS 同步');
     syncMsgShow('同步完成：' + formatClock(lastSyncAt), false);
   } catch (error) {
-    // 会话失效时清掉令牌：用户再点一次同步就会走「连接 NAS」输入密码，而不是反复失败。
+    // 会话失效时清掉令牌：用户再点一次同步就会走「连接服务器」重新连接，而不是反复失败。
     if (error.kind === SYNC_ERR_AUTH) logoutQuiet();
     const message = error.kind === SYNC_ERR_AUTH
-      ? '登录已失效，请重新连接 NAS（再点一次即可输入密码）'
+      ? (IS_SHELL && DEVICE_KEY_OK
+        ? '登录已失效，请在「设置 → 连接服务器」重新连接'
+        : '登录已失效，请重新连接 NAS（再点一次即可输入密码）')
       : error.kind === SYNC_ERR_VAULT
         ? '本机与服务器的加密库不一致，已停止同步（不会覆盖任何一边）'
         : error.kind === SYNC_ERR_NET
@@ -2114,6 +2453,127 @@ function closeSyncLogin(ok) {
   closeDialog(els.syncLoginDialog);
   if (syncLoginResolve) syncLoginResolve(ok);
 }
+
+// ---------- 壳内「连接服务器」（设置 → 连接服务器） ----------
+// 桥接注入的表单调用：window.NnConnectServer({ server, username, password })。
+// 地址与账户（含密码）交给原生保存——密码只存在原生沙箱（SharedPreferences /
+// Preferences），网页存储里绝不落密码。之后做三件事：
+//   登录 → 对齐加密库（远端空/同 salt/异 salt 三条路径）→ 首次全量同步。
+// 本机 wrapped 永远保持设备密钥包裹；上行的只有「账户密码包裹层」。
+function readNativeServerAccount() {
+  if (!IS_SHELL) return null;
+  const api = window.NasNative;
+  if (!api || typeof api.getServerAccount !== 'function') return null;
+  try {
+    const raw = String(api.getServerAccount() || '');
+    if (!raw) return null;
+    const data = JSON.parse(raw);
+    if (!data || !data.username || !data.password) return null;
+    return { username: String(data.username), password: String(data.password) };
+  } catch (error) {
+    return null;
+  }
+}
+
+async function connectServerAndSync(options) {
+  const opts = options || {};
+  const server = normalizeServerUrl(opts.server || '');
+  const username = String(opts.username || '').trim() || DEFAULT_USERNAME;
+  const password = String(opts.password || '');
+  if (!server) throw syncFail(SYNC_ERR_HTTP, '服务器地址格式不对（例如 https://nas.example:28443）');
+  if (!password) throw syncFail(SYNC_ERR_HTTP, '请填写账户密码');
+  const api = window.NasNative;
+  try { if (api && typeof api.setServer === 'function') api.setServer(server); } catch (error) { /* 原生写失败继续登录尝试 */ }
+  try { if (api && typeof api.saveServerAccount === 'function') api.saveServerAccount(username, password); } catch (error) { /* 同上 */ }
+  updateServerLabel();
+
+  const session = await loginAccount(username, password);
+  if (!session) throw syncFail(SYNC_ERR_AUTH, '账户或密码不正确（连的是这台服务器上的账户）');
+
+  const serverVault = await readServerVault();
+
+  if (serverVault.initialized && serverVault.wrapped) {
+    // 服务器已有加密库：先用账户密码验证它能不能解开
+    const sameVault = Boolean(vaultMeta && vaultMeta.salt && vaultMeta.salt === serverVault.salt);
+    if (!sameVault) {
+      const localCount = countLocalNotes();
+      if (localCount > 0) {
+        const adopt = await askConfirm(
+          '服务器上是另一套加密库',
+          '本机已有 ' + localCount + ' 条便签，它们与服务器加密库的密钥不同，无法自动合并。' +
+          '连接会用服务器库接管本机：本机这些便签将被清空（建议先到「数据与备份」导出备份）。确定吗？',
+          '用服务器库接管本机'
+        );
+        if (!adopt) throw syncFail(SYNC_ERR_VAULT, '已取消：本机库保持不变，服务器也未连接');
+      }
+      await clearLocalNotes();
+      vaultMeta = {
+        salt: serverVault.salt,
+        wrapped: serverVault.wrapped,
+        iterations: serverVault.iterations || PBKDF2_ITERATIONS,
+        version: serverVault.version || VAULT_VERSION
+      };
+    }
+    let wkey;
+    try {
+      const serverWrapKey = await deriveKey(password, serverVault.salt, serverVault.iterations || PBKDF2_ITERATIONS);
+      wkey = await unwrapVault(serverWrapKey, serverVault.wrapped);
+    } catch (error) {
+      throw syncFail(SYNC_ERR_VAULT, '这个密码解不开服务器上的加密库（可能是在别的设备改过密码）');
+    }
+    wkeyBytes = wkey;
+    cryptoKey = await importWkey(wkey);   // 接管/校验服务器库后，内存密钥必须换成它的 wkey
+    if (DEVICE_KEY_OK) {
+      // 本机 wrapped 换成/保持设备密钥包裹；serverWrapped 记下服务器那层
+      await rekeyLocalVaultForDevice(password);
+    } else {
+      vaultMeta = Object.assign({}, vaultMeta || {}, {
+        salt: serverVault.salt,
+        iterations: serverVault.iterations || PBKDF2_ITERATIONS,
+        version: serverVault.version || VAULT_VERSION,
+        serverWrapped: serverVault.wrapped,
+        local_only: false
+      });
+      if (!(vaultMeta && vaultMeta.wrapped)) vaultMeta.wrapped = serverVault.wrapped;
+      await saveLocalVault(vaultMeta);
+    }
+    if (!sameVault) await resetSyncCursor();   // 接管了别的库：全量对齐
+    await initialSyncAfterConnect();
+    return { mode: 'linked' };
+  }
+
+  if (serverVault.initialized && !serverVault.wrapped && serverVault.verifier) {
+    throw syncFail(SYNC_ERR_VAULT,
+      '服务器上是旧结构加密库：请先在浏览器/PWA 里登录一次完成升级，再回到应用里连接');
+  }
+
+  // 远端还没有加密库：把本机库连同「账户密码包裹层」推上去
+  if (!vaultMeta || !vaultMeta.salt) {
+    // boot 已自动建库；保险起见这里兜底（正常走不到）
+    await createLocalVault(DEVICE_KEY_OK ? '' : password, DEVICE_KEY_OK ? { dev: true } : {});
+  }
+  if (DEVICE_KEY_OK) {
+    await rekeyLocalVaultForDevice(password);
+  } else {
+    vaultMeta = Object.assign({}, vaultMeta, { serverWrapped: await buildServerWrapped(password) });
+    await saveLocalVault(vaultMeta);
+  }
+  await uploadServerWrapped();
+  await resetSyncCursor();
+  await initialSyncAfterConnect();
+  return { mode: 'uploaded' };
+}
+
+// 连接成功后的首次同步：本机待发队列推上去、服务器便签拉回来。
+// 失败不算连接失败（加密库已对齐、会话已建立），状态胶囊会显示原因。
+async function initialSyncAfterConnect() {
+  try {
+    await sync();
+  } catch (error) {
+    console.warn('[NasNotes] initial sync after connect failed', error);
+  }
+}
+window.NnConnectServer = connectServerAndSync;
 
 function triggerSync(delay = 300) {
   if (syncMode !== 'auto' || !cryptoKey || !sessionToken) return;
@@ -2242,22 +2702,22 @@ function renderFolderOptions() {
   }
 }
 
-// 打开弹窗：老版安卓 WebView 的内核可能没有 dialog.showModal()，
-// 直接调用会抛异常并被吞掉，表现为“点了完全没反应”。这里统一兜底。
+// 打开弹窗：**一律走「open 属性 + 普通定位」这条降级路径，不再用 showModal()/show()**。
+//
+// 原因（鸿蒙上架审核实测）：ArkWeb 把 <dialog> 放进 top layer（模态层）后，
+// 弹窗本体虽然画得出来，但命中测试没跟上——弹窗里的按钮全部点不动，
+// 表现为「设置 → 取消/保存设置无响应、关不掉」；同一页面里弹窗之外的按钮
+// （☰、新建、设置入口）却完全正常，说明事件通道本身没问题，问题只在模态层。
+// 不走 showModal 就没有 top layer：弹窗退化成普通 fixed 层，靠 z-index(420)
+// 压在遮罩(410)之上，命中测试与页面其它元素一致，任何内核都稳。
+// 副作用只有一个：失去浏览器原生的 inert/焦点陷阱，所以遮罩用
+// body.dialog-open::before 兜住点击（见 style.css），Esc 由下面的监听补上。
 function openDialog(dialog) {
   if (!dialog) return false;
   if (dialog.open) return true;
   try {
-    if (typeof dialog.showModal === 'function') {
-      dialog.showModal();
-      return true;
-    }
-  } catch (error) {
-    console.warn('[NasNotes] showModal 不可用，改用降级显示', error);
-  }
-  try {
-    if (typeof dialog.show === 'function') dialog.show();
-    else dialog.setAttribute('open', '');
+    // 只设属性，不调 showModal()/show()：两者都会把元素推进 top layer。
+    dialog.setAttribute('open', '');
     dialog.classList.add('dialog-fallback');
     document.body.classList.add('dialog-open');
     return true;
@@ -2277,15 +2737,18 @@ function closeDialog(dialog) {
   if (!document.querySelector('dialog[open]')) document.body.classList.remove('dialog-open');
 }
 
-// 降级显示的弹窗没有原生 Esc 关闭，这里补一个
+// 弹窗不再走 showModal，浏览器原生的 Esc 关闭也就没了，这里补一个。
+// 顺带补发一次 close 事件：有些流程（如「连接 NAS」对话框）靠它收尾 Promise，
+// 现在 close() 不会被调用，close 事件不会自己冒出来。
 document.addEventListener('keydown', (event) => {
   if (event.key !== 'Escape') return;
-  const stack = Array.from(document.querySelectorAll('dialog[open].dialog-fallback'));
+  const stack = Array.from(document.querySelectorAll('dialog[open]'));
   if (!stack.length) return;
   const top = stack[stack.length - 1];
   event.preventDefault();
-  if (typeof top.onclose === 'function') top.onclose();
-  else closeDialog(top);
+  if (typeof top.onclose === 'function') { top.onclose(); return; }
+  closeDialog(top);
+  try { top.dispatchEvent(new Event('close')); } catch (error) { /* 老引擎忽略 */ }
 });
 
 // 应用内弹窗：安卓 WebView 默认不显示浏览器原生 prompt/confirm。
@@ -2659,12 +3122,22 @@ function exportBackup() {
     toast('请先解锁');
     return;
   }
+  // 壳内免密形态的本机 wrapped 是设备密钥包裹——导出去谁都用不了。
+  // 备份里的解锁层必须是「账户密码包裹层」（serverWrapped），换机/PWA 才能恢复。
+  let wrapLayer = vaultMeta.wrapped;
+  if (vaultMeta.dev) {
+    if (!vaultMeta.serverWrapped) {
+      toast('本机库还没有绑定服务器账户密码，导出的备份无法在其他设备恢复：请先在「设置 → 连接服务器」完成连接，再导出');
+      return;
+    }
+    wrapLayer = vaultMeta.serverWrapped;
+  }
   const backup = {
     format: BACKUP_FORMAT,
     exported_at: new Date().toISOString(),
     meta: {
       salt: vaultMeta.salt,
-      wrapped: vaultMeta.wrapped,
+      wrapped: wrapLayer,
       iterations: vaultMeta.iterations,
       version: vaultMeta.version
     },
@@ -2720,6 +3193,17 @@ async function importBackup(file) {
         iterations: incoming.iterations || PBKDF2_ITERATIONS,
         version: incoming.version || VAULT_VERSION
       };
+      if (IS_SHELL && DEVICE_KEY_OK) {
+        // 壳内免密形态：导入的包裹层是账户密码层，落本机后换成设备密钥包裹，
+        // serverWrapped 留着（连回同一服务器直接能用）。
+        try {
+          const wrapKey = await deviceWrapKey(vaultMeta.salt);
+          vaultMeta.wrapped = await wrapVault(wrapKey, wkeyBytes);
+          vaultMeta.serverWrapped = incoming.wrapped;
+          vaultMeta.dev = true;
+          devSecretMemo = nativeDeviceSecret();
+        } catch (error) { /* 设备密钥不可用时保持原样（下次解锁会走 migrate） */ }
+      }
       await saveLocalVault(vaultMeta);
       await resetSyncCursor();
     }
@@ -2788,7 +3272,7 @@ if (els.lockServerTestBtn) {
     const api = nativeServerApi();
     const target = api ? (api.getServer() || '') : location.origin;
     if (!target) {
-      setLockServerState('先填 NAS 地址，例如 192.168.5.10:28443', 'bad');
+      setLockServerState('先填 NAS 地址，例如 nas.example.com:28443 或 10.0.0.20:28080', 'bad');
       return;
     }
     els.lockServerTestBtn.disabled = true;
@@ -2900,9 +3384,10 @@ els.resetVaultConfirmBtn.addEventListener('click', async () => {
   els.lockError.hidden = true;
   els.resetVaultConfirmBtn.disabled = true;
   try {
-    // 本机优先的壳：还没有 NAS 概念，「忘记密码」只清本机（本机库密码丢了
-    // 密文就永远解不开，这是唯一出路），不发任何网络请求。
-    const localOnlyReset = IS_SHELL && LOCAL_FIRST;
+    // 壳内「忘记密码」只清本机：本机库密钥丢了，密文永远解不开，清空是唯一出路。
+    // 免密形态（dev）绝不顺手清服务器库——那台 NAS 上可能还有别的设备在用，
+    // 用户在这台坏手机上点清空不该把别人的数据也删掉；连回服务器会自动拉回来。
+    const localOnlyReset = IS_SHELL && (LOCAL_FIRST || DEVICE_KEY_OK);
     if (!localOnlyReset) {
       if (!sessionToken) {
         // 未登录时先验证账户密码再清库，避免任意访客删数据
@@ -2951,10 +3436,17 @@ els.resetVaultConfirmBtn.addEventListener('click', async () => {
         });
       }
     } catch (error) { /* 本机缓存清理失败不影响服务端已清空 */ }
-    showLockScreen('init');
-    showLockError(localOnlyReset
-      ? '本机便签与加密库已全部清除。重新设置密码即可开始使用（NAS 上的数据不受影响）。'
-      : '全部便签与加密库已删除。账户名和密码不变，重新登录将创建新的空加密库。');
+    if (IS_SHELL && DEVICE_KEY_OK) {
+      // 免密形态：清完直接重建一个设备密钥保护的空库进入应用，不再出现锁屏。
+      shellGateMode = '';
+      await shellAutoUnlock();
+      toast('本机便签与加密库已全部清除（NAS 上的数据不受影响）');
+    } else {
+      showLockScreen('init');
+      showLockError(localOnlyReset
+        ? '本机便签与加密库已全部清除。重新设置密码即可开始使用（NAS 上的数据不受影响）。'
+        : '全部便签与加密库已删除。账户名和密码不变，重新登录将创建新的空加密库。');
+    }
     renderList();
     renderEditor();
   } catch (error) {
@@ -3001,12 +3493,13 @@ els.saveAccount.addEventListener('click', async () => {
     if (newPass) {
       body.new_password = newPass;
       // 用新密码重新包裹 wkey：笔记密文不变，只换包裹层。
-      const newWrapSalt = bytesToB64(crypto.getRandomValues(new Uint8Array(16)));
-      const newWrapKey = await deriveKey(newPass, newWrapSalt, PBKDF2_ITERATIONS);
+      // salt 保持不变（本机与服务器同一套 salt，游标不作废）：
+      // 服务器层 = PBKDF2(新密码, 同 salt)；壳内本机层仍由设备密钥包裹。
+      const iterations = (vaultMeta && vaultMeta.iterations) || PBKDF2_ITERATIONS;
       body.vault = {
-        salt: newWrapSalt,
-        wrapped: await wrapVault(newWrapKey, wkeyBytes),
-        iterations: PBKDF2_ITERATIONS,
+        salt: vaultMeta.salt,
+        wrapped: await buildServerWrapped(newPass),
+        iterations: iterations,
         version: VAULT_VERSION
       };
     }
@@ -3022,14 +3515,24 @@ els.saveAccount.addEventListener('click', async () => {
     sessionToken = '';
     localStorage.removeItem('nn-session');
     if (newPass) {
-      vaultMeta = {
+      // salt 没变（游标继续有效）：只换「账户密码包裹层」。
+      vaultMeta = Object.assign({}, vaultMeta, {
         salt: body.vault.salt,
-        wrapped: body.vault.wrapped,
-        iterations: PBKDF2_ITERATIONS,
-        version: VAULT_VERSION
-      };
+        serverWrapped: body.vault.wrapped,
+        iterations: body.vault.iterations,
+        version: body.vault.version
+      });
+      if (!vaultMeta.dev) {
+        // PWA 形态只有一个包裹层，就是账户密码层
+        vaultMeta.wrapped = body.vault.wrapped;
+      }
       await idbPut(STORE_META, { key: 'vault', value: JSON.stringify(vaultMeta) });
-      await resetSyncCursor();   // salt 变了，旧游标作废，下次全量对齐
+      // 壳内把新口令交回原生保管，下次「连接服务器」直接用它登录
+      try {
+        const api = window.NasNative;
+        const nativeName = result.username || targetName || currentName;
+        if (api && typeof api.saveServerAccount === 'function') api.saveServerAccount(nativeName, newPass);
+      } catch (error) { /* 原生写失败不影响本次改密 */ }
     }
     accountName = result.username || targetName || currentName;
 
@@ -4114,7 +4617,7 @@ window.addEventListener('offline', () => {
 });
 
 const SETTINGS_PANEL_TITLES = {
-  account: '账户', sync: '同步', appearance: '外观与编辑', data: '数据与备份', about: '关于'
+  account: '账户', sync: '连接服务器', appearance: '外观与编辑', data: '数据与备份', about: '关于'
 };
 
 function showSettingsPanel(name) {
@@ -4154,7 +4657,7 @@ async function openSettingsTo(panel) {
   openDialog(els.settingsDialog);
   updateSyncUI();
   updateServerLabel();
-  // 壳内「设置 → 同步」里的地址行与 CA 行由桥接注入，打开设置时按原生配置回填。
+  // 壳内「设置 → 连接服务器」里的地址行与 CA 行由桥接注入，打开设置时按原生配置回填。
   const injectedServerInput = document.getElementById('nn-server-input');
   const nativeApi = nativeServerApi();
   if (injectedServerInput && nativeApi) {
@@ -4303,8 +4806,14 @@ els.importFile.addEventListener('change', () => {
     }
   }
 
-  offlineReady = Boolean(vaultMeta && vaultMeta.wrapped);
-  showLockScreen(vaultMeta && vaultMeta.salt ? 'unlock' : 'init');
+  // 壳内免密形态（新壳 + 设备密钥可用）：门禁交给系统（锁屏/指纹/人脸），
+  // boot 直接用设备密钥解开本机库进入应用，不再出现应用内密码。
+  if (IS_SHELL && DEVICE_KEY_OK) {
+    await shellAutoUnlock();
+  } else {
+    offlineReady = Boolean(vaultMeta && vaultMeta.wrapped);
+    showLockScreen(vaultMeta && vaultMeta.salt ? 'unlock' : 'init');
+  }
   renderList();
   renderEditor();
   updateSyncUI();

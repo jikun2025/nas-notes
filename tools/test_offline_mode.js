@@ -28,12 +28,42 @@ function ok(name, fn) {
 }
 
 // ---------- 静态结构：离线独立 ----------
-ok('锁屏提供「仅在本机使用」入口（不连 NAS 也能开始）', () => {
+ok('锁屏为「仅在本机使用」留了入口（PWA/旧壳：不连 NAS 也能开始）', () => {
   assert.match(html, /id="lockLocalBtn"[^>]*hidden>仅在本机使用（不连接 NAS）</);
   assert.match(app, /els\.lockLocalBtn\.addEventListener\('click'/);
-  assert.match(app, /function createLocalVault\(passphrase\)/);
+  // 签名带 opts：壳内传 { dev: true } 走设备密钥包裹，PWA 传空走密码包裹
+  assert.match(app, /function createLocalVault\(passphrase, opts\)/);
   assert.match(app, /local_only: true/);
 });
+
+ok('新壳免密直入：设备密钥包裹本机库，boot 不出现应用密码', () => {
+  // 判据只看原生桥有没有设备密钥能力（与是否配过 NAS 无关）
+  assert.match(app, /const DEVICE_KEY_OK = \(function \(\)/);
+  assert.match(app, /typeof api\.getDeviceSecret === 'function'/);
+  assert.match(app, /async function deviceWrapKey\(saltB64\)/);
+  assert.match(app, /async function unlockWithDeviceSecret\(\)/);
+  assert.match(app, /async function shellAutoUnlock\(\)/);
+  // 首启没有库：直接建一个设备密钥库，不问密码
+  assert.match(app, /createLocalVault\('', \{ dev: true \}\)/);
+  // boot 走 shellAutoUnlock，而不是 showLockScreen
+  assert.match(app, /if \(IS_SHELL && DEVICE_KEY_OK\) \{\s*\n\s*await shellAutoUnlock\(\);/);
+  // 旧壳建的密码库：兜底面板输一次旧密码迁移，之后同样免密
+  assert.match(app, /shellGateMode = 'migrate'/);
+  assert.match(app, /async function migrateLocalVaultToDevice\(\)/);
+  // 设备密钥只在内存里缓存一次，绝不落网页存储
+  assert.match(app, /let devSecretMemo = null;/);
+  assert.match(app, /const s = String\(api\.getDeviceSecret\(\) \|\| ''\);\s*\n\s*return s\.length >= 32 \? s : '';/);
+});
+
+ok('连接服务器集中到设置里：地址+账户+密码走原生，密码不进网页存储', () => {
+  assert.match(app, /window\.NnConnectServer = connectServerAndSync/);
+  assert.match(app, /api\.saveServerAccount\(username, password\)/);
+  assert.match(app, /function readNativeServerAccount\(\)/);
+  // 上行的只有「账户密码包裹层」，设备密钥那层绝不上行
+  assert.match(app, /serverWrapped/);
+  assert.match(app, /本机库还没绑定服务器账户密码/);
+});
+
 
 ok('本机缓存包裹层，离线可解锁', () => {
   assert.match(app, /async function readLocalVault\(\)/);
@@ -76,7 +106,7 @@ ok('状态胶囊是手动同步入口，且手机可见', () => {
 ok('同步前先校验两边是同一套加密库', () => {
   assert.match(app, /async function readServerVault\(\)/);
   assert.match(app, /vaultMeta\.salt !== meta\.salt/);
-  assert.match(app, /async function uploadLocalVault\(\)/);
+  assert.match(app, /async function uploadServerWrapped\(\)/);
   assert.match(app, /SYNC_ERR_VAULT/);
 });
 
@@ -171,13 +201,18 @@ const FLOW = String.raw`(async () => {
 
   try {
     const lock = document.getElementById('lockScreen');
-    const localBtn = document.getElementById('lockLocalBtn');
-    await waitFor(() => localBtn && !localBtn.hidden, 6000);
+    const unlockBtn = document.getElementById('unlockBtn');
+    // 旧壳（没有设备密钥能力）首启形态：按钮变成「进入本机便签」，
+    // 密码 + 确认两次输入，建一个纯本机的加密库；全程零网络请求。
+    await waitFor(() => lock.hidden === false && unlockBtn.textContent.trim() === '进入本机便签', 8000);
     info.lockTitle = document.getElementById('lockTitle').textContent.trim();
-    step('本机无库时出现「仅在本机使用」', localBtn && !localBtn.hidden);
+    info.unlockLabel = unlockBtn.textContent.trim();
+    step('旧壳首启是「进入本机便签」（不出现 NAS 账户概念）', info.unlockLabel === '进入本机便签', info.lockTitle);
 
     document.getElementById('passphraseInput').value = 'test-pass-123';
-    localBtn.click();
+    const confirmInput = document.getElementById('confirmInput');
+    if (confirmInput) confirmInput.value = 'test-pass-123';
+    unlockBtn.click();
     const unlocked = await waitFor(() => lock.hidden === true, 20000);
     info.lockError = document.getElementById('lockError').textContent.trim();
     step('不联网即可创建本机加密库并进入', unlocked, info.lockError);
@@ -261,6 +296,114 @@ const FLOW = String.raw`(async () => {
   return JSON.stringify(info);
 })()`;
 
+// 新壳（有设备密钥能力）的完整流程：boot 免密直入 → 建便签 → 点同步被引导去设置。
+const FLOW_DEVICE = String.raw`(async () => {
+  const info = { steps: [] };
+  const step = (name, good, extra) => info.steps.push({ name, ok: !!good, extra: extra === undefined ? '' : String(extra) });
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  const waitFor = async (fn, timeout) => {
+    const start = Date.now();
+    while (Date.now() - start < (timeout || 10000)) {
+      let value = false;
+      try { value = await fn(); } catch (error) { value = false; }
+      if (value) return true;
+      await sleep(60);
+    }
+    return false;
+  };
+  const openDb = () => new Promise((resolve, reject) => {
+    const req = indexedDB.open('nas-notes-enc');
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  const all = (db, name) => new Promise((resolve, reject) => {
+    const req = db.transaction(name, 'readonly').objectStore(name).getAll();
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+  const one = (db, name, key) => new Promise((resolve, reject) => {
+    const req = db.transaction(name, 'readonly').objectStore(name).get(key);
+    req.onsuccess = () => resolve(req.result);
+    req.onerror = () => reject(req.error);
+  });
+
+  try {
+    const lock = document.getElementById('lockScreen');
+    const secret = window.__NN_DEV_SECRET__ || '';
+    step('桩桥提供设备密钥（免密形态成立）',
+      typeof (window.NasNative || {}).getDeviceSecret === 'function' && secret.length >= 32);
+
+    // 门禁在系统侧：boot 拿设备密钥直接开库，应用内不问密码
+    const entered = await waitFor(() => lock.hidden === true, 30000);
+    info.lockError = document.getElementById('lockError').textContent.trim();
+    step('首启免密直入：不出现应用锁屏、不用输密码', entered, info.lockError);
+    if (!entered) throw new Error('未能自动进入');
+
+    document.getElementById('newBtn').click();
+    const editing = await waitFor(() => document.getElementById('deleteBtn').hidden === false, 6000);
+    step('能新建便签', editing);
+    const title = '免密壳测试便签';
+    const titleInput = document.getElementById('titleInput');
+    titleInput.value = title;
+    titleInput.dispatchEvent(new Event('input', { bubbles: true }));
+    const rich = document.getElementById('richEditor');
+    rich.innerHTML = '<p>设备密钥包裹，全程不联网</p>';
+    rich.dispatchEvent(new Event('input', { bubbles: true }));
+    await sleep(1200);
+
+    const db = await openDb();
+    const notes = await all(db, 'notes');
+    const outbox = await all(db, 'outbox');
+    const vaultRow = await one(db, 'meta', 'vault');
+    const vault = vaultRow && vaultRow.value ? JSON.parse(vaultRow.value) : {};
+    const dump = JSON.stringify({ notes, outbox, meta: vaultRow });
+    step('便签以密文落盘（库内找不到明文）',
+      notes.length >= 1 && dump.indexOf(title) < 0 && dump.indexOf('设备密钥包裹') < 0);
+    step('本机库是设备密钥包裹（dev 标记 + wrapped）', vault.dev === true && !!vault.wrapped);
+    step('没连服务器时库只在本机（local_only）', vault.local_only === true);
+
+    // 设备密钥只该留在原生侧：网页存储里一个字节都不许有
+    let lsDump = '';
+    for (let i = 0; i < localStorage.length; i += 1) {
+      const k = localStorage.key(i);
+      lsDump += k + '=' + localStorage.getItem(k) + ';';
+    }
+    step('设备密钥不落 IndexedDB / localStorage', (dump + lsDump).indexOf(secret) < 0);
+
+    info.badge = document.getElementById('syncBadge').textContent.trim();
+    step('状态胶囊提示待同步', /待同步/.test(info.badge), info.badge);
+
+    // 点状态胶囊：壳内没配服务器地址 → 直接引导去「设置 → 连接服务器」，
+    // 既不弹「输入 NAS 密码」的旧对话框，也不发任何请求。
+    document.getElementById('syncBadge').click();
+    await sleep(900);
+    const settings = document.getElementById('settingsDialog');
+    const login = document.getElementById('syncLoginDialog');
+    const settingsOpen = settings.open || settings.hasAttribute('open');
+    const loginOpen = login.open || login.hasAttribute('open');
+    step('未连服务器时点同步 → 打开「设置 → 连接服务器」而不是要密码', settingsOpen && !loginOpen,
+      'settings=' + settingsOpen + ' login=' + loginOpen);
+    step('引导过程中没发任何 /api 请求', window.__apiCalls.length === 0, JSON.stringify(window.__apiCalls));
+    info.syncMode = document.getElementById('syncMode').value;
+    step('壳内同步方式默认「手动」', info.syncMode === 'manual', info.syncMode);
+
+    document.getElementById('cancelSettings').click();
+    await sleep(320);
+    step('设置弹窗「取消」能关掉', !settings.hasAttribute('open'));
+
+    // 点「锁定」＝清掉内存明文，再用设备密钥自动重解锁：不回密码页
+    document.getElementById('lockBtn').click();
+    await sleep(4500);
+    step('点「锁定」仍免密（清明文后自动重解锁，不弹锁屏）', lock.hidden === true);
+
+    step('全程零 /api 请求', window.__apiCalls.length === 0, JSON.stringify(window.__apiCalls));
+  } catch (error) {
+    info.error = String((error && error.message) || error);
+  }
+  info.ok = info.steps.length > 0 && info.steps.every((s) => s.ok);
+  return JSON.stringify(info);
+})()`;
+
 function getJson(url) {
   return new Promise((resolve, reject) => {
     http.get(url, (res) => {
@@ -274,14 +417,13 @@ function getJson(url) {
   });
 }
 
-async function runBrowserFlow() {
+async function runBrowserFlow(label, probe, flowSource, port) {
   const browser = findBrowser();
   if (!browser) {
     console.log('  SKIP 浏览器离线流程（未找到 Edge/Chrome）');
     return;
   }
-
-  const port = 19280 + Math.floor(Math.random() * 60);
+  console.log('  -- ' + label);
   const origin = 'http://127.0.0.1:' + port;
   const apiHits = [];
 
@@ -300,12 +442,7 @@ async function runBrowserFlow() {
     }
     let body = fs.readFileSync(file);
     if (rel === '/index.html') {
-      // 在 app.js 之前统计所有 /api/ 请求，并模拟安卓壳环境
-      const probe = '<script>window.__NN_SHELL__=true;window.__apiCalls=[];' +
-        '(function(){var orig=window.fetch;window.fetch=function(input,init){' +
-        'var u=typeof input==="string"?input:(input&&input.url)||"";' +
-        'if(String(u).indexOf("/api/")>=0)window.__apiCalls.push(String(u));' +
-        'return orig.apply(this,arguments);};})();</script>';
+      // 在 app.js 之前装好壳形态桩：__NN_SHELL__ / 原生桥 / /api 计数探针
       body = Buffer.from(String(body).replace('</head>', probe + '</head>'), 'utf8');
     }
     res.writeHead(200, { 'Content-Type': MIME[path.extname(rel)] || 'application/octet-stream' });
@@ -378,7 +515,7 @@ async function runBrowserFlow() {
 
     let reply = null;
     for (let attempt = 0; attempt < 3; attempt += 1) {
-      reply = await send('Runtime.evaluate', { expression: FLOW, awaitPromise: true, returnByValue: true });
+      reply = await send('Runtime.evaluate', { expression: flowSource, awaitPromise: true, returnByValue: true });
       const err = reply && reply.error && reply.error.message;
       if (!err || !/context was destroyed/i.test(err)) break;
       await new Promise((r) => setTimeout(r, 400));
@@ -413,9 +550,26 @@ async function runBrowserFlow() {
   }
 }
 
-runBrowserFlow().catch((error) => {
-  console.error('  FAIL 浏览器离线流程：' + (error && error.message ? error.message : error));
-  process.exitCode = 1;
-}).finally(() => {
-  console.log('\nOffline mode tests: ' + pass + ' pass');
-});
+// 统计所有 /api/ 请求（必须在 app.js 之前注入）
+const API_COUNTER = 'window.__apiCalls=[];' +
+  '(function(){var orig=window.fetch;window.fetch=function(input,init){' +
+  'var u=typeof input==="string"?input:(input&&input.url)||"";' +
+  'if(String(u).indexOf("/api/")>=0)window.__apiCalls.push(String(u));' +
+  'return orig.apply(this,arguments);};})();';
+// A：旧壳（v2.9 及以前的桥，没有设备密钥能力）——仍走应用内密码
+const PROBE_LEGACY = '<script>window.__NN_SHELL__=true;' + API_COUNTER + '</script>';
+// B：新壳——桥提供设备密钥，boot 免密直入
+const PROBE_DEVICE = '<script>window.__NN_DEV_SECRET__="nn-test-device-secret-0123456789abcdef";' +
+  'window.__NN_SHELL__=true;' + API_COUNTER +
+  'window.NasNative={getServer:function(){return "";},setServer:function(){},' +
+  'getDeviceSecret:function(){return window.__NN_DEV_SECRET__;},saveServerAccount:function(){},' +
+  'getServerAccount:function(){return "";},clearServerAccount:function(){}};</script>';
+
+runBrowserFlow('A 旧壳（无设备密钥）：密码建本机库 + 离线读写', PROBE_LEGACY, FLOW, 19410)
+  .then(() => runBrowserFlow('B 新壳（设备密钥）：免密直入 + 同步引导去设置', PROBE_DEVICE, FLOW_DEVICE, 19470))
+  .catch((error) => {
+    console.error('  FAIL 浏览器离线流程：' + (error && error.message ? error.message : error));
+    process.exitCode = 1;
+  }).finally(() => {
+    console.log('\nOffline mode tests: ' + pass + ' pass');
+  });

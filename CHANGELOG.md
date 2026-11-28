@@ -3,6 +3,20 @@
 轻签（NasNotes）的本地版本史。每个版本对应一次提交，并在 git 里打了同名附注标签（`git tag -n` 可看摘要）。
 APK 的 `versionCode` / `versionName` 与此处版本号同步；PWA 只需强刷让 Service Worker 换缓存。
 
+## v3.0 — 2026-11-28
+
+应用内不再有密码（门禁交给系统锁屏/指纹/人脸）、连接服务器集中到设置、随包零内网 IP；并修复华为上架审核报的「录音失败」「设置弹窗关不掉」。
+
+- **壳内免密直入**：判据只看原生桥有没有设备密钥能力（`DEVICE_KEY_OK` = `NasNative.getDeviceSecret`）。boot 直接走 `shellAutoUnlock()`——首次启动用设备密钥现建本机加密库（`createLocalVault('', { dev: true })`，标记 `dev: true`），之后每次启动自动解库，应用内不出现任何密码输入；开门禁完全由手机锁屏/指纹/人脸（鸿蒙可再叠加「应用锁」）负责。PWA 与旧壳（没有该桥方法）仍是密码锁屏。
+- **旧库一次性迁移**：v2.9 及以前用密码包裹的本机库，兜底面板输一次旧密码 → `migrateLocalVaultToDevice()` 把本机包裹层换成设备密钥包裹，其余字段不动；解不开（清过数据/换机）只能清空重建，NAS 上的数据不受影响。
+- **设备密钥只在原生侧**：安卓 `SecureRandom` 32 字节→64 hex 存 SharedPreferences，鸿蒙 `cryptoFramework.createRandom().generateRandomSync(32)` 存 Preferences；网页侧只在内存 `devSecretMemo` 缓存一次，绝不写 IndexedDB / localStorage（回归里有逐字节检查）。
+- **「设置 → 连接服务器」集中四项**：服务器地址、账户、密码、CA 证书。`window.NnConnectServer({server,username,password})` → 登录 → 对齐加密库（远端空 / 同 salt / 异 salt 三条路径）→ 首轮同步；账户与密码只存原生沙箱，网页存储不落密码。上行的只有「账户密码包裹层」（`serverWrapped`），设备密钥那层永不上行——推上去等于挂一把谁都打不开的锁。
+- **随包不再内置证书与内网地址**：删除 `static/ca.crt`、鸿蒙 `rawfile/ca.crt`，退场内置 pin / `OWN_HOST` / `buildPinnedTrust` / 旧地址迁移；HTTPS 只剩两条路——用户导入自家 CA（叠加系统根）或系统默认信任。新增 `tools/test_no_private_ip.js`（随包文件里不含任何内网地址、三处证书均不存在、`sync-assets.js` 不再同步 `ca.crt`）。**注意：git 历史与已推送的远程仍含旧地址，彻底清除需重写历史后强推。**
+- **修复审核问题①「点击录音提示无法录音」**：鸿蒙的 `ohos.permission.MICROPHONE` 是 user_grant——`module.json5` 声明只是「允许申请」，ArkWeb 的 `onPermissionRequest` 也只放行网页层，缺系统层授权时 `getUserMedia` 直接 NotAllowedError。新增桥方法 `requestMic()` / `micState()`（Native 侧 `checkAccessTokenSync` + `requestPermissionsFromUser`），网页 `ensureMicPermission()` 在录音前调用并等用户点「允许」（最多 15 秒）；被拒时明确提示去「设置 → 应用和元服务 → 轻签 → 权限」开启麦克风。`methodList` 扩到 13 项。
+- **修复审核问题②「设置里取消/保存无响应、关不掉弹窗」**：ArkWeb 把 `<dialog>` 放进 top layer（模态层）后，弹窗能画出来但内部按钮命中测试失效——弹窗外的按钮（☰/新建/设置入口）全部正常。`openDialog()` 改为**只用 `open` 属性 + 普通 fixed 层**（z-index 420，遮罩 410），不再调用 `showModal()` / `show()`；CSS 补 `dialog:not([open]) { display: none !important; }`（`.settings-dialog` 的 `display:flex` 会盖掉 UA 规则），提示条 z-index 提到 460 以免被遮罩压住。所有弹窗（设置/分类/输入/确认/连接 NAS）同时受益。
+- 测试：新增审核回归 6 项（`test_mobile_layout.js`：弹窗不进模态层、取消/保存/× 三个出口都在命中测试最上层且真能关掉）、鸿蒙壳新增 2 项（麦克风三道齐备、弹窗不走 top layer）、离线流程重写为双流程（A 旧壳密码建库 17 项 / B 新壳免密直入 13 项）；全套 18 套桩测通过（离线 44、手机版式 36、鸿蒙壳 10、客户端端到端 28、富文本 11、壳页面 6…）。
+- SW 缓存 v32；APK `versionCode 30 / 3.0`；鸿蒙 HAP `3000000 / 3.0.0`（DevEco 自动签名，真机直装）。
+
 ## v2.9 — 2026-11-28
 
 本机优先的上架形态 + 「设置 → 同步」里连接 NAS 与导入自家 CA 证书。
@@ -10,7 +24,7 @@ APK 的 `versionCode` / `versionName` 与此处版本号同步；PWA 只需强�
 - **壳内首次启动 = 纯本机**：上架包不再有任何 NAS 概念——首次锁屏只让设「本机密码」（至少 8 位），全程零联网、不出现地址行与账户名；本机库照常随机 wkey + PBKDF2 + AES-GCM 加密。已配过 NAS 地址的老装机升级后仍保留「解锁 / 在线登录」两条路（`LOCAL_FIRST` 按原生 `getServer()` 是否为空判定）。
 - **NAS 连接挪进「设置 → 同步」**：壳内 `_bridge.js` 在同步面板注入「NAS 地址」行（保存进原生 Preferences，可测试连接）；`app.js` 每次打开设置派发 `nn:settings-open`，桥按原生真值回填，别处改过配置打开即见当前值。同步默认手动，点列表顶部状态胶囊才连。
 - **导入本地 CA 证书**（安卓 `MainActivity.setCa/getCa/clearCa` + 鸿蒙 `NasBridge` 同名桥方法，语义与中文提示逐字一致）：同步面板出现文件选择行（.crt/.pem/.cer，≤256KB，须含 `-----BEGIN CERTIFICATE-----`），PEM 文本存原生 Preferences（鸿蒙再落盘沙箱文件供 `caPath`），只存本机、绝不上行；带「清除」与已导入张数状态。
-- **HTTPS 信任按主机三分**（双端对齐，修复「内置 pin 独占 caPath 导致别人连不上自家 NAS」）：连自家 `192.168.5.10` 仍用内置 pin（与用户导入证书并存时合并 bundle）；他人 NAS 用导入的 CA（叠加系统根）；没导入则走系统信任（Let's Encrypt 等公开证书直接可用）。鸿蒙侧 `CaBundle.pathFor(host)` + `NasHttp.hostOf(url)` 实现；安卓侧 `applyNasTls` 同款分支。
+- **HTTPS 信任按主机三分**（双端对齐，修复「内置 pin 独占 caPath 导致别人连不上自家 NAS」）：连作者自家 NAS（按主机名判定）仍用内置 pin（与用户导入证书并存时合并 bundle）；他人 NAS 用导入的 CA（叠加系统根）；没导入则走系统信任（Let's Encrypt 等公开证书直接可用）。鸿蒙侧 `CaBundle.pathFor(host)` + `NasHttp.hostOf(url)` 实现；安卓侧 `applyNasTls` 同款分支。（该 pin 已在 v3.0 整体移除，见下。）
 - **原生桥缺地址不出网**：`apiAsync` 空 server 直接回 `{"error":"no server configured"}`，本机模式下任何 `/api/` 都不会拨号。
 - 双壳共用一份 `_bridge.js`（安卓 assets 为母本，`E:\HarmonyOS\nas-notes-harmony\tools\sync-assets.js` 同步到鸿蒙 rawfile）；鸿蒙桥方法须登记在 `Index.ets` 的 `javaScriptProxy.methodList`。
 - 测试：新增 `tools/test_harmony_shell.js`（7 项静态回归：桥三方法/methodList/NasPrefs CA 存取清/OWN_HOST 三分/caPath 按 host/版本下限）；`test_harmony_compat` SW 断言改下限（≥28）免每次升版改测试；全套 17 套桩测通过。

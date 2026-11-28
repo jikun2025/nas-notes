@@ -1,7 +1,7 @@
 /* cryptofb.js — 非安全上下文（http://局域网IP 等）下的 WebCrypto 兼容层。
  *
  * 浏览器只在“安全上下文”（HTTPS / localhost）暴露 crypto.subtle；通过
- * http://192.168.5.10:28080 访问时 crypto.subtle 为 undefined，首次创建
+ * http://内网IP:端口 访问时 crypto.subtle 为 undefined，首次创建
  * 口令会在 importKey 处抛 "Cannot read properties of undefined"。本文件
  * 仅在 crypto.subtle 缺失时装载，用零依赖纯 JS 补齐 app.js 用到的最小
  * 接口面：importKey('raw',…,'PBKDF2') → deriveKey(PBKDF2-HMAC-SHA256 →

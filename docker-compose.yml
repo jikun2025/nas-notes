@@ -24,7 +24,7 @@ services:
       timeout: 5s
       retries: 3
 
-  # HTTPS 反向代理：https://192.168.5.10:28443（自签 CA，证书见 deploy/caddy/certs/）
+  # HTTPS 反向代理：https://<NAS 地址>:28443（自签 CA，证书见 deploy/caddy/certs/）
   # 与 nas-notes 同一 compose 网络，可直接按服务名反代。
   proxy:
     image: caddy:2-alpine

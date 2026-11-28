@@ -162,9 +162,47 @@
     }
   }
 
-  // 在「设置 → 同步」面板里注入「NAS 服务器地址」（原生 SharedPreferences 持久化）。
-  // 本机读写完全不需要这个地址，只有点同步时才连它——所以它属于同步设置，
-  // 不放在设置弹窗顶部（那样会打散两级设置布局）。
+  // 「设置 → 连接服务器」：填服务器地址、账户名、密码，可导入 CA 证书，
+  // 点「连接并同步」才建立连接（原生 SharedPreferences 持久化地址与账户）。
+  // 应用本身免密直入（系统门禁），这里填的是 NAS 上的账户——不是应用密码。
+  function readSavedAccount() {
+    var api = window.NasNative;
+    if (!api || typeof api.getServerAccount !== 'function') return null;
+    try {
+      var raw = String(api.getServerAccount() || '');
+      if (!raw) return null;
+      var data = JSON.parse(raw);
+      if (!data || !data.username) return null;
+      return { username: String(data.username), password: String(data.password || '') };
+    } catch (e) { return null; }
+  }
+
+  function normalizeAddr(raw) {
+    var v = String(raw || '').trim().replace(/\/+$/, '');
+    if (v && !/^https?:\/\//i.test(v)) v = 'https://' + v;
+    return /^https?:\/\/[^\/\s]+$/.test(v) ? v : '';
+  }
+
+  function fillConnectForm() {
+    var inp = document.getElementById('nn-server-input');
+    if (inp && !inp.value) {
+      try { inp.value = window.NasNative.getServer() || ''; } catch (e) { /* 桥异常按空 */ }
+    }
+    var user = document.getElementById('nn-user-input');
+    var pass = document.getElementById('nn-pass-input');
+    var saved = readSavedAccount();
+    if (saved) {
+      if (user && !user.value) user.value = saved.username;
+      if (pass && !pass.value) pass.value = saved.password;
+    }
+    var state = document.getElementById('nn-connect-state');
+    var addr = '';
+    try { addr = String(window.NasNative.getServer() || ''); } catch (e) { /* 忽略 */ }
+    if (state && !state.textContent) {
+      state.textContent = addr ? '已连接：' + addr : '未连接：填好下面几项后点「连接并同步」';
+    }
+  }
+
   function injectServerRow() {
     var panel = document.querySelector('.settings-panel[data-panel="sync"]');
     if (!panel || !window.NasNative || document.getElementById('nn-server-row')) return false;
@@ -173,31 +211,49 @@
     var wrap = document.createElement('div');
     wrap.id = 'nn-server-wrap';
     wrap.innerHTML =
-      '<label for="nn-server-input">NAS 服务器地址</label>' +
-      '<p class="muted" id="nn-server-hint">本机离线读写不需要它；只有点「立即同步」时才会连这个地址（只传密文）。</p>' +
-      '<div id="nn-server-row" style="display:flex;gap:8px;align-items:center;margin:6px 0 14px">' +
-      '<input id="nn-server-input" type="text" placeholder="https://192.168.5.10:28443" style="flex:1;min-width:0;padding:8px;border-radius:8px;border:1px solid #999">' +
-      '<button id="nn-server-save" type="button" style="padding:8px 14px;border-radius:8px;border:1px solid #777;background:#e8e8e8;cursor:pointer">保存并测试</button>' +
+      '<label for="nn-server-input">服务器地址</label>' +
+      '<p class="muted" id="nn-server-hint">本机离线读写不需要它；连接后应用才会访问这台服务器（只传密文）。</p>' +
+      '<div id="nn-server-row" style="display:flex;gap:8px;align-items:center;margin:6px 0 12px">' +
+      '<input id="nn-server-input" type="text" placeholder="https://nas.example.com:28443" style="flex:1;min-width:0;padding:8px;border-radius:8px;border:1px solid #999">' +
+      '</div>' +
+      '<label for="nn-user-input">服务器账户名</label>' +
+      '<div style="margin:6px 0 12px"><input id="nn-user-input" type="text" autocomplete="username" style="width:100%;box-sizing:border-box;padding:8px;border-radius:8px;border:1px solid #999"></div>' +
+      '<label for="nn-pass-input">服务器账户密码</label>' +
+      '<div style="margin:6px 0 4px"><input id="nn-pass-input" type="password" autocomplete="current-password" style="width:100%;box-sizing:border-box;padding:8px;border-radius:8px;border:1px solid #999"></div>' +
+      '<p class="muted tiny">账户与密码只保存在本应用的原生配置里（不进网页存储），用于登录服务器与自动重新连接。</p>' +
+      '<div style="display:flex;gap:10px;align-items:center;margin:10px 0 6px">' +
+      '<button id="nn-connect-btn" type="button" style="padding:9px 18px;border-radius:8px;border:1px solid #3a72b0;background:#2b6cb0;color:#fff;cursor:pointer">连接并同步</button>' +
+      '<span id="nn-connect-state" class="muted tiny"></span>' +
       '</div>';
 
     if (card) panel.insertBefore(wrap, card);
     else panel.insertBefore(wrap, panel.firstChild);
 
-    var inp = document.getElementById('nn-server-input');
-    var btn = document.getElementById('nn-server-save');
-    inp.value = window.NasNative.getServer() || '';
+    var btn = document.getElementById('nn-connect-btn');
+    var state = document.getElementById('nn-connect-state');
+    fillConnectForm();
     btn.addEventListener('click', function () {
-      var v = (inp.value || '').trim().replace(/\/+$/, '');
-      if (v && !/^https?:\/\//i.test(v)) v = 'https://' + v;
-      if (!/^https?:\/\/[^\/\s]+$/.test(v)) { toast('地址格式：http(s)://IP或域名[:端口]'); return; }
-      window.NasNative.setServer(v);
-      var label = document.getElementById('syncServerAddr');
-      if (label) label.textContent = v;
-      toast('已保存，正在测试连接…');
-      // 走被劫持的 fetch，才会真正转发到 NAS（origFetch 会落到虚拟域，永远"成功"）
-      window.fetch(ASSET_ORIGIN + '/api/health')
-        .then(function (r) { toast(r.status < 500 ? '连接正常 ✓' : '服务器响应异常(' + r.status + ')'); })
-        .catch(function () { toast('连接失败：检查地址/端口/NAS 服务；若 NAS 用自签证书，请在下方导入 CA 后再试'); });
+      var v = normalizeAddr(document.getElementById('nn-server-input').value);
+      if (!v) { toast('地址格式：http(s)://IP或域名[:端口]'); return; }
+      var user = (document.getElementById('nn-user-input').value || '').trim();
+      var pass = document.getElementById('nn-pass-input').value || '';
+      if (!pass) {
+        var saved = readSavedAccount();
+        if (saved && saved.password) { pass = saved.password; if (!user) user = saved.username; }
+      }
+      if (!pass) { toast('请填写服务器账户密码'); return; }
+      if (typeof window.NnConnectServer !== 'function') { toast('页面尚未就绪，稍候再试'); return; }
+      btn.disabled = true;
+      state.textContent = '连接中…';
+      window.NnConnectServer({ server: v, username: user, password: pass }).then(function (res) {
+        btn.disabled = false;
+        state.textContent = '已连接：' + v;
+        toast((res && res.mode === 'linked') ? '已接入服务器上的加密库，完成同步' : '已连接：本机加密库已上传到服务器');
+      }).catch(function (err) {
+        btn.disabled = false;
+        state.textContent = '连接失败，本机数据不受影响';
+        toast('连接失败：' + ((err && err.message) || '未知错误'));
+      });
     });
     injectCaRow(panel);
     return true;
@@ -283,15 +339,10 @@
     if (rounds > 0) setTimeout(function () { tryInject(rounds - 1); }, 400);
   }
 
-  // app.js 每次打开「设置」都会派发这个事件：按原生持久化值回填地址与 CA 状态，
+  // app.js 每次打开「设置」都会派发这个事件：按原生持久化值回填地址、账户与 CA 状态，
   // 保证在别处改过配置后打开设置看到的一定是当前真值。
   document.addEventListener('nn:settings-open', function () {
-    try {
-      var inp = document.getElementById('nn-server-input');
-      if (inp && window.NasNative && typeof window.NasNative.getServer === 'function') {
-        inp.value = window.NasNative.getServer() || '';
-      }
-    } catch (e) { /* 忽略桥异常 */ }
+    try { fillConnectForm(); } catch (e) { /* 忽略桥异常 */ }
     refreshCaStatus();
   });
 

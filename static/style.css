@@ -486,7 +486,12 @@ dialog {
   box-shadow: var(--shadow-md);
 }
 dialog::backdrop { background: rgba(16, 22, 40, .5); }
-/* 老内核降级：没有 showModal 时用 open 属性显示，这里手动居中并补遮罩 */
+/* 关掉的弹窗必须彻底不渲染：下面给 .settings-dialog 设了 display:flex，
+   那会盖掉 UA 的 dialog:not([open]){display:none}，所以这里用 !important 钉死。 */
+dialog:not([open]) { display: none !important; }
+/* 弹窗定位：**现在所有弹窗都走这条路径**（不再用 showModal / show，
+   因为 ArkWeb 的 top layer 里弹窗按钮点不动，详见 app.js openDialog 注释）。
+   普通 fixed 层 + z-index 压在遮罩(body.dialog-open::before, 410) 之上。 */
 dialog.dialog-fallback {
   position: fixed; inset: 0; margin: auto; height: fit-content;
   max-height: 88vh; overflow: auto; z-index: 420;
@@ -574,10 +579,12 @@ dialog input:focus, dialog select:focus { border-color: var(--primary); }
 .context-menu button:hover { background: var(--panel-hover); }
 .context-menu .danger-item { color: var(--danger); }
 .context-menu .danger-item:hover { background: var(--danger-soft); }
+/* 提示条要压在所有弹窗之上（弹窗 420 / 遮罩 410），否则连接失败之类的
+   提示会被弹窗遮罩挡住，用户只看到「点了没反应」。 */
 .toast {
   position: fixed; left: 50%; bottom: 28px; transform: translateX(-50%);
   background: var(--text); color: var(--panel); padding: 10px 16px; border-radius: 9px;
-  font-size: 13px; z-index: 400; max-width: calc(100% - 32px); text-align: center; box-shadow: var(--shadow-md);
+  font-size: 13px; z-index: 460; max-width: calc(100% - 32px); text-align: center; box-shadow: var(--shadow-md);
 }
 
 /* ---------- 加密锁屏 ---------- */
