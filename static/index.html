@@ -27,7 +27,7 @@
         <p id="lockServerState" class="lock-server-state" hidden></p>
         <p class="muted tiny">填 NAS 的地址，例如 https://192.168.5.10:28443（HTTP 也支持）。只有「登录并同步」会连它；留空则沿用上次保存的地址。</p>
       </div>
-      <label for="usernameInput">账户名</label>
+      <label id="usernameLabel" for="usernameInput">账户名</label>
       <input id="usernameInput" type="text" autocomplete="username" autocapitalize="none" spellcheck="false" placeholder="默认 admin">
       <label id="passphraseLabel" for="passphraseInput">密码</label>
       <input id="passphraseInput" type="password" autocomplete="current-password" placeholder="默认 admin">
@@ -36,7 +36,7 @@
       <p id="lockError" class="lock-error" hidden></p>
       <button id="unlockBtn" class="primary block" type="button">登录</button>
       <button id="lockLocalBtn" class="ghost block small" type="button" hidden>仅在本机使用（不连接 NAS）</button>
-      <p id="lockOfflineNote" class="muted tiny" hidden>本机模式：便签只加密保存在这台手机上，不联网也能读写；需要多端同步时再连接 NAS。</p>
+      <p id="lockOfflineNote" class="muted tiny" hidden>本机模式：便签只加密保存在这台设备上，全程不联网；需要多端同步时，解锁后打开「设置 → 同步」填写 NAS 地址，并可导入自家 HTTPS 服务的 CA 证书。</p>
       <p class="muted tiny">密码丢失无法恢复。<button id="resetVaultBtn" class="linkbtn" type="button">忘记密码？</button></p>
       <div id="resetPanel" class="reset-panel" hidden>
         <p class="reset-warning"><b>危险操作：不可撤销</b><br>将永久删除服务器和本机上的<b>全部便签、图片和录音</b>，并重建空加密库。账户名和密码不会改变。</p>

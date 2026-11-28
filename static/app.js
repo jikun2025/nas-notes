@@ -48,6 +48,7 @@ const els = {
   lockServerInput: document.getElementById('lockServerInput'),
   lockServerTestBtn: document.getElementById('lockServerTestBtn'),
   lockServerState: document.getElementById('lockServerState'),
+  usernameLabel: document.getElementById('usernameLabel'),
   usernameInput: document.getElementById('usernameInput'),
   passphraseLabel: document.getElementById('passphraseLabel'),
   passphraseInput: document.getElementById('passphraseInput'),
@@ -182,6 +183,19 @@ let audioQuality = 'balanced';
 // 所以壳内默认「手动」；浏览器直连 NAS 时保持自动。
 const IS_SHELL = Boolean(window.__NN_SHELL__);
 const DEFAULT_SYNC_MODE = IS_SHELL ? 'manual' : 'auto';
+// 壳内「本机优先」：上架包首次启动没有任何 NAS 概念——锁屏只设本机密码，
+// 全程不联网。NAS 地址、账户、CA 证书全部放到「设置 → 同步」。
+// 老装（升级上来）的如果已经配置过 NAS 地址，仍保留「解锁 + 可选在线登录」两条路。
+const LOCAL_FIRST = (function () {
+  if (!IS_SHELL) return false;
+  try {
+    const api = window.NasNative;
+    if (!api || typeof api.getServer !== 'function') return true;
+    return !String(api.getServer() || '').trim();
+  } catch (error) {
+    return true;   // 桥异常按「没有 NAS 地址」处理，走本机模式
+  }
+})();
 const SYNC_ERR_AUTH = 'auth';
 const SYNC_ERR_NET = 'net';
 const SYNC_ERR_VAULT = 'vault';
@@ -564,7 +578,9 @@ function normalizeServerUrl(raw) {
 function fillLockServerInput() {
   if (!els.lockServerBlock) return;
   const api = nativeServerApi();
-  els.lockServerBlock.hidden = !api;
+  // 壳内锁屏不再出现 NAS 地址（本机优先）：地址在「设置 → 同步」里由桥接注入。
+  // 只有「已配置过 NAS 的老装机」在解锁页保留只读回填，避免重填。
+  els.lockServerBlock.hidden = !api || LOCAL_FIRST;
   if (!api) return;
   if (!els.lockServerInput.value) {
     try { els.lockServerInput.value = api.getServer() || ''; } catch (error) { /* 桥异常按空处理 */ }
@@ -572,7 +588,7 @@ function fillLockServerInput() {
   // 原生对象在、桥接脚本不在：说明 APK 里的 _bridge.js 没注入，所有 /api/ 请求
   // 都会落到静态资源拦截器上（502 Bridge Unavailable），登录和同步都不可能成功。
   if (!window.__NnBridge) {
-    setLockServerState('壳内桥接脚本未加载：请求发不出去，请安装最新 APK', 'bad');
+    setLockServerState('壳内桥接脚本未加载：请求发不出去，请安装最新版本', 'bad');
     return;
   }
   setLockServerState('');
@@ -609,7 +625,7 @@ function updateServerLabel() {
   let label = location.origin;
   try {
     if (window.NasNative && typeof window.NasNative.getServer === 'function') {
-      label = window.NasNative.getServer() || '未设置（在登录页或设置里填入 NAS 地址）';
+      label = window.NasNative.getServer() || '未连接：在下方「NAS 地址」填写并保存';
     }
   } catch (error) { /* 桥不可用时按同源显示 */ }
   els.syncServerAddr.textContent = label;
@@ -1274,19 +1290,39 @@ const DEFAULT_USERNAME = 'admin';
 
 function showLockScreen(mode) {
   initMode = mode === 'init';
+  // 壳内本机优先：还没配 NAS 地址时，首次进入就是「设置本机密码」，
+  // 不是「登录 NAS」。老装机（已配地址）维持原语义。
+  const localInit = IS_SHELL && LOCAL_FIRST && initMode;
   els.lockScreen.hidden = false;
   els.lockTitle.textContent = IS_SHELL ? '轻签 · 本机便签' : '登录轻签';
-  els.lockHint.textContent = initMode
-    ? '第一次使用：填好 NAS 地址，再输入 NAS 的账户和密码登录并同步；暂时不连 NAS 就用下面的「仅在本机使用」（默认 admin / admin）。'
-    : '输入密码解锁本机库即可离线读写；需要同步时点列表顶部的同步状态按钮。';
+  if (localInit) {
+    els.lockHint.textContent = '第一次使用：设置一个本机密码（至少 8 位）。便签只加密保存在这台设备上，全程不联网；需要多端同步时，再在「设置 → 同步」里连接 NAS。';
+  } else if (IS_SHELL) {
+    els.lockHint.textContent = initMode
+      ? '输入密码解锁本机库；也可以用它登录已配置的 NAS。需要同步时点列表顶部的同步状态按钮。'
+      : '输入密码解锁本机库即可离线读写；需要同步时点列表顶部的同步状态按钮。';
+  } else {
+    els.lockHint.textContent = initMode
+      ? '第一次使用：填好 NAS 地址，再输入 NAS 的账户和密码登录并同步；暂时不连 NAS 就用下面的「仅在本机使用」（默认 admin / admin）。'
+      : '输入密码解锁本机库即可离线读写；需要同步时点列表顶部的同步状态按钮。';
+  }
   fillLockServerInput();
-  els.confirmLabel.hidden = true;
-  els.confirmInput.hidden = true;
+  els.confirmLabel.hidden = !localInit;
+  els.confirmInput.hidden = !localInit;
   els.resetPanel.hidden = true;
   els.resetConfirmInput.value = '';
-  els.unlockBtn.textContent = initMode ? '登录并同步' : '解锁';
-  els.lockLocalBtn.hidden = !initMode;
-  if (els.lockOfflineNote) els.lockOfflineNote.hidden = !initMode;
+  // 壳内本机模式：账户名根本不出现；解锁按钮就是「本机解锁/创建本机库」
+  const showUsernameRow = !IS_SHELL || !LOCAL_FIRST;
+  if (els.usernameLabel) els.usernameLabel.hidden = !showUsernameRow;
+  els.usernameInput.hidden = !showUsernameRow;
+  if (localInit) {
+    els.unlockBtn.textContent = '进入本机便签';
+    els.lockLocalBtn.hidden = true;
+  } else {
+    els.unlockBtn.textContent = initMode && !IS_SHELL ? '登录并同步' : '解锁';
+    els.lockLocalBtn.hidden = !initMode;
+  }
+  if (els.lockOfflineNote) els.lockOfflineNote.hidden = !(initMode && IS_SHELL);
   els.lockError.hidden = true;
   if (!els.usernameInput.value) {
     els.usernameInput.value = accountName || localStorage.getItem('nn-account') || DEFAULT_USERNAME;
@@ -1295,7 +1331,7 @@ function showLockScreen(mode) {
   els.confirmInput.value = '';
   offlineReady = Boolean(vaultMeta && vaultMeta.wrapped);
   setBadge(initMode ? '本机无库' : '未解锁');
-  setTimeout(() => (els.passphraseInput.value ? els.passphraseInput : (initMode ? els.usernameInput : els.passphraseInput)).focus(), 0);
+  setTimeout(() => (els.passphraseInput.value ? els.passphraseInput : (!showUsernameRow || !initMode ? els.passphraseInput : els.usernameInput)).focus(), 0);
 }
 
 function showLockError(message) {
@@ -1543,6 +1579,29 @@ async function handleUnlock() {
   els.unlockBtn.disabled = true;
 
   try {
+    // 0) 壳内本机优先（上架包默认）：完全离线。没有库→用「密码+确认」建本机库；
+    //    有库→只用本机包裹层解锁。任何情况下都不发网络请求。
+    if (IS_SHELL && LOCAL_FIRST) {
+      if (vaultMeta && vaultMeta.wrapped) {
+        const localKey = await unlockWithLocalVault(passphrase);   // 密码错会抛
+        accountName = '本机';
+        await afterUnlock(localKey);
+        return;
+      }
+      if (passphrase.length < 8) {
+        return showLockError('本机密码至少 8 位（忘记无法恢复，建议记到密码管理器）');
+      }
+      if (passphrase !== els.confirmInput.value) {
+        return showLockError('两次输入的密码不一致');
+      }
+      const key = await createLocalVault(passphrase);
+      accountName = '本机';
+      localStorage.setItem('nn-account', accountName);
+      await afterUnlock(key);
+      toast('已创建本机加密库：便签只存在这台设备上');
+      return;
+    }
+
     // 1) 本机优先：不发任何网络请求，断网、NAS 关机都能解锁。
     if (vaultMeta && vaultMeta.wrapped) {
       let localKey = null;
@@ -1585,7 +1644,11 @@ async function handleUnlock() {
     if (key) await afterUnlock(key);
   } catch (error) {
     console.warn('[NasNotes] unlock failed', error);
-    showLockError('操作失败：' + (error && error.message ? error.message : '未知错误'));
+    if (IS_SHELL && LOCAL_FIRST) {
+      showLockError('密码不正确：本机库只能用它当初设置的密码解锁');
+    } else {
+      showLockError('操作失败：' + (error && error.message ? error.message : '未知错误'));
+    }
   } finally {
     els.unlockBtn.disabled = false;
   }
@@ -1982,6 +2045,16 @@ async function doManualSync() {
     return;
   }
   if (syncing) return;
+  // 壳里还没配置 NAS 地址：不盲发请求，直接引导到「设置 → 同步」（那里能填地址、导入 CA）。
+  if (IS_SHELL && nativeServerApi()) {
+    let configured = '';
+    try { configured = String(nativeServerApi().getServer() || '').trim(); } catch (error) { /* 按未配置处理 */ }
+    if (!configured) {
+      toast('尚未连接 NAS：请在「设置 → 同步」填写 NAS 地址');
+      openSettingsTo('sync');
+      return;
+    }
+  }
   clearTimeout(syncTimer);
   flushRich();
   if (saveTimer) {
@@ -2827,30 +2900,44 @@ els.resetVaultConfirmBtn.addEventListener('click', async () => {
   els.lockError.hidden = true;
   els.resetVaultConfirmBtn.disabled = true;
   try {
-    if (!sessionToken) {
-      // 未登录时先验证账户密码再清库，避免任意访客删数据
-      const username = (els.usernameInput.value || '').trim() || DEFAULT_USERNAME;
-      const password = els.passphraseInput.value;
-      if (!password) return showLockError('请先在上方输入账户名和密码');
-      const session = await loginAccount(username, password);
-      if (!session) return showLockError('账户或密码不正确');
-    }
-    const resp = await fetch('/api/vault', {
-      method: 'DELETE', headers: authHeaders(),
-      body: JSON.stringify({ confirm: 'RESET' })
-    });
-    if (resp.status === 401) { handleSessionExpired(); return; }
-    if (!resp.ok) {
-      const body = await resp.json().catch(() => ({}));
-      return showLockError('清空失败：' + (body.error || ('HTTP ' + resp.status)));
+    // 本机优先的壳：还没有 NAS 概念，「忘记密码」只清本机（本机库密码丢了
+    // 密文就永远解不开，这是唯一出路），不发任何网络请求。
+    const localOnlyReset = IS_SHELL && LOCAL_FIRST;
+    if (!localOnlyReset) {
+      if (!sessionToken) {
+        // 未登录时先验证账户密码再清库，避免任意访客删数据
+        const username = (els.usernameInput.value || '').trim() || DEFAULT_USERNAME;
+        const password = els.passphraseInput.value;
+        if (!password) return showLockError('请先在上方输入账户名和密码');
+        const session = await loginAccount(username, password);
+        if (!session) return showLockError('账户或密码不正确');
+      }
+      const resp = await fetch('/api/vault', {
+        method: 'DELETE', headers: authHeaders(),
+        body: JSON.stringify({ confirm: 'RESET' })
+      });
+      if (resp.status === 401) { handleSessionExpired(); return; }
+      if (!resp.ok) {
+        const body = await resp.json().catch(() => ({}));
+        return showLockError('清空失败：' + (body.error || ('HTTP ' + resp.status)));
+      }
     }
     // 清本机：加密库元数据、全部缓存、待发队列
     vaultMeta = null;
     cryptoKey = null;
     wkeyBytes = null;
+    offlineReady = false;
     notesCache.clear();
     plainCache.clear();
     folderRegistry = [];
+    if (localOnlyReset) {
+      // 本机优先模式没有账户概念：把会话与账户名残留一并抹掉，
+      // 下次锁屏就是干净的「第一次使用」初始化流程。
+      sessionToken = '';
+      accountName = '';
+      try { localStorage.removeItem('nn-session'); } catch (error) { /* 隐私模式忽略 */ }
+      try { localStorage.removeItem('nn-account'); } catch (error) { /* 隐私模式忽略 */ }
+    }
     try {
       await idbPut(STORE_META, { key: 'vault', value: 'null' });
       await idbDelete(STORE_META, FOLDERS_META_KEY);
@@ -2865,7 +2952,9 @@ els.resetVaultConfirmBtn.addEventListener('click', async () => {
       }
     } catch (error) { /* 本机缓存清理失败不影响服务端已清空 */ }
     showLockScreen('init');
-    showLockError('全部便签与加密库已删除。账户名和密码不变，重新登录将创建新的空加密库。');
+    showLockError(localOnlyReset
+      ? '本机便签与加密库已全部清除。重新设置密码即可开始使用（NAS 上的数据不受影响）。'
+      : '全部便签与加密库已删除。账户名和密码不变，重新登录将创建新的空加密库。');
     renderList();
     renderEditor();
   } catch (error) {
@@ -4046,11 +4135,11 @@ els.settingsNav.addEventListener('click', (event) => {
 });
 els.settingsClose.addEventListener('click', () => closeDialog(els.settingsDialog));
 
-els.settingsBtn.addEventListener('click', async () => {
+async function openSettingsTo(panel) {
   applyTheme(theme);
   applyEditorFont(editorFont);
   els.defaultViewSelect.value = localStorage.getItem('nn-default-view') || viewMode;
-  showSettingsPanel('account');
+  showSettingsPanel(panel || 'account');
   els.deviceInput.value = deviceId;
   els.syncMode.value = syncMode;
   els.syncInterval.value = String(syncIntervalSec);
@@ -4065,13 +4154,14 @@ els.settingsBtn.addEventListener('click', async () => {
   openDialog(els.settingsDialog);
   updateSyncUI();
   updateServerLabel();
-  // 壳内「设置 → 同步」里的地址行由桥接注入，打开设置时按原生配置回填，
-  // 免得在登录页改过地址后这里还显示旧值。
+  // 壳内「设置 → 同步」里的地址行与 CA 行由桥接注入，打开设置时按原生配置回填。
   const injectedServerInput = document.getElementById('nn-server-input');
   const nativeApi = nativeServerApi();
   if (injectedServerInput && nativeApi) {
     try { injectedServerInput.value = nativeApi.getServer() || ''; } catch (error) { /* 忽略桥异常 */ }
   }
+  // 通知桥接脚本刷新它注入的「CA 证书」状态行（导入/清除只发生在原生侧）
+  try { document.dispatchEvent(new Event('nn:settings-open')); } catch (error) { /* 老引擎无 Event 构造 */ }
   if (sessionToken) {
     // 服务端为准刷新账户名（改名后其他设备同步显示）
     try {
@@ -4086,7 +4176,9 @@ els.settingsBtn.addEventListener('click', async () => {
       }
     } catch (error) { /* 离线时保持本机记录 */ }
   }
-});
+}
+
+els.settingsBtn.addEventListener('click', () => openSettingsTo('account'));
 els.cancelSettings.addEventListener('click', () => closeDialog(els.settingsDialog));
 els.saveSettings.addEventListener('click', () => {
   applyTheme(els.themeSelect.value);

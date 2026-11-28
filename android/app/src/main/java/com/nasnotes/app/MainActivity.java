@@ -83,20 +83,22 @@ public class MainActivity extends Activity {
     private static final String ASSET_ORIGIN = "https://" + ASSET_HOST;
     private static final String PREFS = "nn";
     private static final String PREF_SERVER = "server";
-    private static final String DEFAULT_SERVER = "https://192.168.5.10:28443";
+    private static final String PREF_CA = "user_ca";
+    /** 上架包默认「纯本机使用」：不预填任何 NAS 地址（空=本机模式，零联网）。 */
+    private static final String DEFAULT_SERVER = "";
 
     /**
      * 旧版（≤2.6）默认存的是 http://192.168.5.10:28080；NAS 已把 28080 收紧为仅回环，
      * 手机上连必失败。读取时把这一精确旧值一次性升级到 HTTPS 反代地址；
-     * 用户自填的其他 http 地址不动（尊重选择）。
+     * 用户自填的其他 http 地址不动（尊重选择）。未配置时返回空串=本机模式。
      */
     private String effectiveServer() {
         String server = prefs.getString(PREF_SERVER, DEFAULT_SERVER);
-        if (server == null || server.trim().isEmpty()) return DEFAULT_SERVER;
+        if (server == null) server = "";
         server = server.trim();
         if (server.equals("http://192.168.5.10:28080")) {
-            prefs.edit().putString(PREF_SERVER, DEFAULT_SERVER).apply();
-            return DEFAULT_SERVER;
+            server = "https://192.168.5.10:28443";
+            prefs.edit().putString(PREF_SERVER, server).apply();
         }
         return server;
     }
@@ -114,14 +116,16 @@ public class MainActivity extends Activity {
     private final AtomicInteger toastSeq = new AtomicInteger();
     private final StringBuilder consoleLog = new StringBuilder();
     private boolean inlineLoaded;
-    /** NAS 自签 CA 固定信任管理器（由 assets ca.crt 构建，见 buildPinnedTrust）。 */
+    /** 内置 CA（assets/ca.crt，作者自家 NAS 的 caddy 反代）固定信任，仅对自家 host 生效。 */
     private volatile TrustManager[] pinnedTrust;
     private SSLContext pinnedSslContext;
+    /** 用户导入 CA + 系统根证书叠加的复合信任（他人自签 NAS 用），setCa 后自动重建。 */
+    private volatile SSLContext compositeSslContext;
+    private volatile String compositeSource;   // 构建 composite 时用的 PEM，变了就重建
 
     /**
-     * 把 assets/ca.crt（飞牛 NAS 上 caddy 反代用的自建 CA 公钥）pin 进独立 TrustManager。
-     * 只有该 CA 签发的证书才被视为可信；普通 HttpURLConnection 走系统默认信任不受影响。
-     * ca.crt 缺失/解析失败时返回 null，HTTPS 连接退化为系统默认信任（会失败并提示，不静默放行）。
+     * 内置 CA（assets/ca.crt）pin 进独立 TrustManager——只覆盖「自家 NAS」这一种场景。
+     * ca.crt 缺失/解析失败时置 null，HTTPS 退化为系统默认信任（会失败并提示，不静默放行）。
      */
     private synchronized void buildPinnedTrust() {
         if (pinnedSslContext != null) return;
@@ -157,12 +161,86 @@ public class MainActivity extends Activity {
         }
     }
 
-    /** 对到 NAS 的 HttpsURLConnection 应用固定 CA 信任与主机名校验降级（仅签名严格、SAN 宽松）。 */
+    /** 解析 PEM 文本里的全部证书；一张都解不出来返回 null。 */
+    private static java.util.List<X509Certificate> parsePemCerts(String pem) {
+        java.util.List<X509Certificate> out = new ArrayList<>();
+        if (pem == null) return null;
+        try (ByteArrayInputStream in = new ByteArrayInputStream(pem.getBytes(StandardCharsets.UTF_8))) {
+            CertificateFactory cf = CertificateFactory.getInstance("X509");
+            for (Certificate c : cf.generateCertificates(in)) {
+                if (c instanceof X509Certificate) out.add((X509Certificate) c);
+            }
+        } catch (Exception ignored) { }
+        return out.isEmpty() ? null : out;
+    }
+
+    /**
+     * 用户导入 CA + 系统默认根的复合信任：任一信任锚验签通过即可。
+     * 公开证书（Let's Encrypt 等）走系统根照常成功——导入 CA 不影响没导入的用户。
+     */
+    private synchronized SSLContext compositeContext(String pem) {
+        if (pem == null || pem.trim().isEmpty()) { compositeSslContext = null; compositeSource = null; return null; }
+        if (compositeSslContext != null && pem.equals(compositeSource)) return compositeSslContext;
+        java.util.List<X509Certificate> userCerts = parsePemCerts(pem);
+        if (userCerts == null) { compositeSslContext = null; compositeSource = null; return null; }
+        try {
+            TrustManagerFactory sysTmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+            sysTmf.init((KeyStore) null);            // null KeyStore = 系统预置根证书
+            X509TrustManager sysTm = (X509TrustManager) sysTmf.getTrustManagers()[0];
+            KeyStore ks = KeyStore.getInstance(KeyStore.getDefaultType());
+            ks.load(null, null);
+            int idx = 0;
+            for (X509Certificate c : userCerts) ks.setCertificateEntry("nn-user-ca-" + (idx++), c);
+            TrustManagerFactory userTmf = TrustManagerFactory.getInstance(TrustManagerFactory.getDefaultAlgorithm());
+            userTmf.init(ks);
+            X509TrustManager userTm = (X509TrustManager) userTmf.getTrustManagers()[0];
+            final X509TrustManager a = sysTm, b = userTm;
+            X509TrustManager combined = new X509TrustManager() {
+                @Override public void checkClientTrusted(X509Certificate[] chain, String authType) throws java.security.cert.CertificateException {
+                    try { a.checkClientTrusted(chain, authType); } catch (java.security.cert.CertificateException e) { b.checkClientTrusted(chain, authType); }
+                }
+                @Override public void checkServerTrusted(X509Certificate[] chain, String authType) throws java.security.cert.CertificateException {
+                    try { a.checkServerTrusted(chain, authType); } catch (java.security.cert.CertificateException e) { b.checkServerTrusted(chain, authType); }
+                }
+                @Override public X509Certificate[] getAcceptedIssuers() {
+                    X509Certificate[] x = a.getAcceptedIssuers(), y = b.getAcceptedIssuers();
+                    X509Certificate[] z = new X509Certificate[x.length + y.length];
+                    System.arraycopy(x, 0, z, 0, x.length);
+                    System.arraycopy(y, 0, z, x.length, y.length);
+                    return z;
+                }
+            };
+            SSLContext ctx = SSLContext.getInstance("TLS");
+            ctx.init(null, new TrustManager[]{combined}, new java.security.SecureRandom());
+            compositeSslContext = ctx;
+            compositeSource = pem;
+            return ctx;
+        } catch (Exception e) {
+            compositeSslContext = null;
+            compositeSource = null;
+            return null;
+        }
+    }
+
+    /** 对到 NAS 的 HttpsURLConnection 按目标 host 选择信任：自家→内置 pin；他人→系统根＋导入 CA。 */
     private void applyNasTls(HttpsURLConnection c, String host) {
-        buildPinnedTrust();
-        if (pinnedSslContext == null) return; // ca.crt 不在：保持系统默认信任，失败会走既有错误提示
-        c.setSSLSocketFactory(pinnedSslContext.getSocketFactory());
-        // 证书 SAN 可能只含 192.168.5.10 而用户填了别的等价地址；签名已由固定 CA 把关，
+        SSLContext ctx = null;
+        boolean relaxedVerifier = false;
+        if ("192.168.5.10".equals(host)) {
+            // 作者自家 NAS（内置 ca.crt 对应的地址）：保持 pin，手机无需装证书
+            buildPinnedTrust();
+            ctx = pinnedSslContext;
+            relaxedVerifier = ctx != null;
+        } else {
+            // 别人家的 NAS：优先「系统根 + 用户导入 CA」；没导入就用系统默认（公开证书照常）。
+            // 自签证书常见 CN/SAN 与 IP 不一致，签名由导入 CA 把关后主机名做非空校验即可。
+            SSLContext cc = compositeContext(prefs.getString(PREF_CA, ""));
+            if (cc != null) { ctx = cc; relaxedVerifier = true; }
+        }
+        if (ctx == null) return; // 走系统默认信任，失败会走既有错误提示
+        c.setSSLSocketFactory(ctx.getSocketFactory());
+        if (!relaxedVerifier) return;
+        // 证书 SAN 可能只含内网域名而用户填了 IP（或反之）；签名已由上面选定的信任锚把关，
         // 主机名在此只做非空一致性检查（防明显错配），不再要求 SAN 完全相等。
         final String wantHost = host;
         c.setHostnameVerifier(new HostnameVerifier() {
@@ -170,7 +248,6 @@ public class MainActivity extends Activity {
                 try {
                     Certificate[] chain = session.getPeerCertificates();
                     if (chain.length == 0) return false;
-                    // 链必须最终由固定 CA 签发（socket 工厂已校验过一次，这里再确认端证书可解析）
                     if (!(chain[0] instanceof X509Certificate)) return false;
                     ((X509Certificate) chain[0]).checkValidity();
                     return wantHost != null && !wantHost.isEmpty();
@@ -713,6 +790,34 @@ public class MainActivity extends Activity {
         }
 
         /**
+         * 导入用户 CA（PEM 文本，可含多张证书）。存 SharedPreferences，
+         * 只在本机；HTTPS 转发时叠加进信任链（见 compositeContext）。
+         * 返回 "ok" 或中文原因，桥接脚本据此提示。
+         */
+        @JavascriptInterface
+        public String setCa(String pem) {
+            if (pem == null || pem.trim().isEmpty()) return "内容为空";
+            if (pem.length() > 256 * 1024) return "证书内容过大（>256KB）";
+            if (pem.indexOf("-----BEGIN CERTIFICATE-----") < 0) return "不是 PEM 证书（缺 BEGIN CERTIFICATE 标记）";
+            if (parsePemCerts(pem) == null) return "证书解析失败：请选 .crt/.pem 公钥文件";
+            prefs.edit().putString(PREF_CA, pem).apply();
+            synchronized (MainActivity.this) { compositeSslContext = null; compositeSource = null; }
+            return "ok";
+        }
+
+        @JavascriptInterface
+        public String getCa() {
+            String pem = prefs.getString(PREF_CA, "");
+            return pem == null ? "" : pem;
+        }
+
+        @JavascriptInterface
+        public void clearCa() {
+            prefs.edit().remove(PREF_CA).apply();
+            synchronized (MainActivity.this) { compositeSslContext = null; compositeSource = null; }
+        }
+
+        /**
          * 异步 HTTP 转发：结果通过 window[cbName](status, headersJson, bodyText) 回传。
          * headersJson：请求头 JSON；path 含查询串。仅转发白名单头，body 上限 14MB（与 server.py 对齐）。
          */
@@ -727,6 +832,11 @@ public class MainActivity extends Activity {
                 String text;
                 try {
                     String server = effectiveServer();
+                    if (server.isEmpty()) {
+                        // 本机模式（上架默认）：没有任何 NAS 地址，绝不出网。
+                        respondJs(cbName, 0, respHeaders, "{\"error\":\"no server configured\"}");
+                        return;
+                    }
                     URL url = new URL(server + path);
                     HttpURLConnection c = (HttpURLConnection) url.openConnection();
                     if (c instanceof HttpsURLConnection) {

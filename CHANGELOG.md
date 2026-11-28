@@ -3,6 +3,35 @@
 轻签（NasNotes）的本地版本史。每个版本对应一次提交，并在 git 里打了同名附注标签（`git tag -n` 可看摘要）。
 APK 的 `versionCode` / `versionName` 与此处版本号同步；PWA 只需强刷让 Service Worker 换缓存。
 
+## v2.9 — 2026-11-28
+
+本机优先的上架形态 + 「设置 → 同步」里连接 NAS 与导入自家 CA 证书。
+
+- **壳内首次启动 = 纯本机**：上架包不再有任何 NAS 概念——首次锁屏只让设「本机密码」（至少 8 位），全程零联网、不出现地址行与账户名；本机库照常随机 wkey + PBKDF2 + AES-GCM 加密。已配过 NAS 地址的老装机升级后仍保留「解锁 / 在线登录」两条路（`LOCAL_FIRST` 按原生 `getServer()` 是否为空判定）。
+- **NAS 连接挪进「设置 → 同步」**：壳内 `_bridge.js` 在同步面板注入「NAS 地址」行（保存进原生 Preferences，可测试连接）；`app.js` 每次打开设置派发 `nn:settings-open`，桥按原生真值回填，别处改过配置打开即见当前值。同步默认手动，点列表顶部状态胶囊才连。
+- **导入本地 CA 证书**（安卓 `MainActivity.setCa/getCa/clearCa` + 鸿蒙 `NasBridge` 同名桥方法，语义与中文提示逐字一致）：同步面板出现文件选择行（.crt/.pem/.cer，≤256KB，须含 `-----BEGIN CERTIFICATE-----`），PEM 文本存原生 Preferences（鸿蒙再落盘沙箱文件供 `caPath`），只存本机、绝不上行；带「清除」与已导入张数状态。
+- **HTTPS 信任按主机三分**（双端对齐，修复「内置 pin 独占 caPath 导致别人连不上自家 NAS」）：连自家 `192.168.5.10` 仍用内置 pin（与用户导入证书并存时合并 bundle）；他人 NAS 用导入的 CA（叠加系统根）；没导入则走系统信任（Let's Encrypt 等公开证书直接可用）。鸿蒙侧 `CaBundle.pathFor(host)` + `NasHttp.hostOf(url)` 实现；安卓侧 `applyNasTls` 同款分支。
+- **原生桥缺地址不出网**：`apiAsync` 空 server 直接回 `{"error":"no server configured"}`，本机模式下任何 `/api/` 都不会拨号。
+- 双壳共用一份 `_bridge.js`（安卓 assets 为母本，`E:\HarmonyOS\nas-notes-harmony\tools\sync-assets.js` 同步到鸿蒙 rawfile）；鸿蒙桥方法须登记在 `Index.ets` 的 `javaScriptProxy.methodList`。
+- 测试：新增 `tools/test_harmony_shell.js`（7 项静态回归：桥三方法/methodList/NasPrefs CA 存取清/OWN_HOST 三分/caPath 按 host/版本下限）；`test_harmony_compat` SW 断言改下限（≥28）免每次升版改测试；全套 17 套桩测通过。
+- SW 缓存 v31；APK `versionCode 29 / 2.9`；鸿蒙 HAP `2900000 / 2.9.0`（DevEco 自动签名，真机直装）。
+
+## v2.8 — 2026-11-27
+
+自签场景浏览体验修复。
+
+- 自签证书下撤销 HSTS（浏览器对自签证书启用 HSTS 会硬拒站点）；旧默认 `http://…:28080` 自动升级 `https://…:28443`；地址缺协议时默认补 https；caddy 开访问日志。
+- SW 缓存 v30；APK `versionCode 28 / 2.8`。
+
+## v2.7 — 2026-11-27
+
+NAS HTTPS 反代 + 壳内 pin：免装手机证书直连自签 NAS。
+
+- `deploy/caddy/` 新增 HTTPS 反代（28443，自签 CA 链签发服务器证书），`docker-compose.yml` 挂载证书并把 28080 明文端口收紧为仅回环。
+- 原生桥内置 NAS 自签 `ca.crt`（assets），HTTPS 转发注入 trust manager，只信任这条 CA 链；手机不需要安装证书即可连 `https://…:28443`。
+- 默认地址切 `https://…:28443`；登录页 NAS 地址块仅壳内显示、可只填 IP:端口自动补协议、「测试连接」走 `/api/health`。
+- SW 缓存 v29；APK `versionCode 27 / 2.7`。
+
 ## v2.6 — 2026-11-26
 
 增量同步、内存全文索引、鸿蒙 7.0 / 卓易通兼容加固。

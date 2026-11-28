@@ -197,15 +197,103 @@
       // 走被劫持的 fetch，才会真正转发到 NAS（origFetch 会落到虚拟域，永远"成功"）
       window.fetch(ASSET_ORIGIN + '/api/health')
         .then(function (r) { toast(r.status < 500 ? '连接正常 ✓' : '服务器响应异常(' + r.status + ')'); })
-        .catch(function () { toast('连接失败：本机离线功能不受影响，检查地址/端口/NAS 服务即可'); });
+        .catch(function () { toast('连接失败：检查地址/端口/NAS 服务；若 NAS 用自签证书，请在下方导入 CA 后再试'); });
     });
+    injectCaRow(panel);
     return true;
+  }
+
+  // 「导入本地 CA 证书」：别人家 NAS 用自签/私有 CA 时，光填地址会握手失败。
+  // 选一个 ca.crt / server.crt（PEM），文本交给原生层持久化（NasNative.setCa），
+  // 原生 HTTPS 转发就信任它。证书只存在这台设备上，绝不上行。
+  // 原生没有 setCa（旧版壳）时整行不出现，避免点了没反应。
+  function caStatusText(pem) {
+    var n = (String(pem).match(/-----BEGIN CERTIFICATE-----/g) || []).length;
+    if (!n) return '未导入：公开的 Let\'s Encrypt 等证书无需导入；NAS 用自签证书时才需要';
+    var name = '';
+    try { name = localStorage.getItem('nn-ca-name') || ''; } catch (e) { /* 隐私模式 */ }
+    return '已导入 ' + n + ' 张证书' + (name ? '（' + name + '）' : '') + '，本机 HTTPS 连接会额外信任它们';
+  }
+
+  function refreshCaStatus() {
+    var el = document.getElementById('nn-ca-status');
+    if (!el || !window.NasNative || typeof window.NasNative.getCa !== 'function') return;
+    var pem = '';
+    try { pem = window.NasNative.getCa() || ''; } catch (e) { /* 桥异常按未导入 */ }
+    el.textContent = caStatusText(pem);
+  }
+
+  function injectCaRow(panel) {
+    if (document.getElementById('nn-ca-wrap')) return;
+    var api = window.NasNative;
+    if (!api || typeof api.setCa !== 'function' || typeof api.getCa !== 'function') return;
+    var anchor = document.getElementById('nn-server-wrap');
+    var wrap = document.createElement('div');
+    wrap.id = 'nn-ca-wrap';
+    wrap.innerHTML =
+      '<label for="nn-ca-file">本地 CA 证书（自家 HTTPS 服务）</label>' +
+      '<div id="nn-ca-row" style="display:flex;gap:8px;align-items:center;margin:6px 0 4px">' +
+      '<input id="nn-ca-file" type="file" accept=".crt,.pem,.cer,.der" style="flex:1;min-width:0;font-size:13px">' +
+      '<button id="nn-ca-clear" type="button" style="padding:8px 14px;border-radius:8px;border:1px solid #777;background:#e8e8e8;cursor:pointer">清除</button>' +
+      '</div>' +
+      '<p id="nn-ca-status" class="muted tiny"></p>';
+    if (anchor && anchor.parentNode) anchor.parentNode.insertBefore(wrap, anchor.nextSibling);
+    else panel.appendChild(wrap);
+
+    refreshCaStatus();
+
+    var fileInput = document.getElementById('nn-ca-file');
+    fileInput.addEventListener('change', function () {
+      var f = fileInput.files && fileInput.files[0];
+      if (!f) return;
+      if (f.size > 262144) { toast('证书文件过大（超过 256KB），请选择 ca.crt 这类小文件'); fileInput.value = ''; return; }
+      if (typeof FileReader !== 'function') { toast('当前系统组件不支持读取文件'); fileInput.value = ''; return; }
+      var reader = new FileReader();
+      reader.onload = function () {
+        var text = String(reader.result || '');
+        if (text.indexOf('-----BEGIN CERTIFICATE-----') < 0) {
+          toast('这个文件不是 PEM 证书：需要 .crt/.pem（含 -----BEGIN CERTIFICATE-----）');
+          fileInput.value = '';
+          return;
+        }
+        var ret = '';
+        try { ret = api.setCa(text) || ''; } catch (e) { ret = '桥调用失败'; }
+        if (ret === 'ok') {
+          try { localStorage.setItem('nn-ca-name', String(f.name || '')); } catch (e) { /* 隐私模式 */ }
+          toast('CA 证书已导入');
+        } else {
+          toast('导入失败：' + (ret || '未知错误'));
+        }
+        refreshCaStatus();
+        fileInput.value = '';
+      };
+      reader.onerror = function () { toast('读取证书失败'); fileInput.value = ''; };
+      reader.readAsText(f, 'utf-8');
+    });
+    document.getElementById('nn-ca-clear').addEventListener('click', function () {
+      try { api.clearCa(); } catch (e) { /* 忽略 */ }
+      try { localStorage.removeItem('nn-ca-name'); } catch (e) { /* 忽略 */ }
+      refreshCaStatus();
+      toast('已清除导入的证书');
+    });
   }
 
   function tryInject(rounds) {
     if (injectServerRow()) return;
     if (rounds > 0) setTimeout(function () { tryInject(rounds - 1); }, 400);
   }
+
+  // app.js 每次打开「设置」都会派发这个事件：按原生持久化值回填地址与 CA 状态，
+  // 保证在别处改过配置后打开设置看到的一定是当前真值。
+  document.addEventListener('nn:settings-open', function () {
+    try {
+      var inp = document.getElementById('nn-server-input');
+      if (inp && window.NasNative && typeof window.NasNative.getServer === 'function') {
+        inp.value = window.NasNative.getServer() || '';
+      }
+    } catch (e) { /* 忽略桥异常 */ }
+    refreshCaStatus();
+  });
 
   if (document.readyState === 'loading') {
     document.addEventListener('DOMContentLoaded', function () { tryInject(12); });

@@ -81,4 +81,32 @@ ok('APK 打包配置：static 与 main/assets 都进 assets，版本号已递增
   assert.ok(code && Number(code[1]) >= 20, 'versionCode 应递增，当前 ' + (code && code[1]));
 });
 
+ok('上架默认纯本机：不预填 NAS 地址，空地址时 apiAsync 绝不出网', () => {
+  assert.match(java, /private static final String DEFAULT_SERVER = "";/);
+  assert.match(java, /if \(server\.isEmpty\(\)\) \{[\s\S]*?no server configured/);
+});
+
+ok('用户 CA 桥：setCa 校验 PEM、getCa/clearCa 齐备，存 SharedPreferences 不出网', () => {
+  assert.match(java, /public String setCa\(String pem\)/);
+  assert.match(java, /public String getCa\(\)/);
+  assert.match(java, /public void clearCa\(\)/);
+  assert.match(java, /parsePemCerts\(pem\) == null/);
+  assert.match(java, /putString\(PREF_CA, pem\)/);
+});
+
+ok('按地址选择信任：自家 host 用内置 pin，他人 NAS 用「系统根＋导入 CA」叠加', () => {
+  assert.match(java, /if \("192\.168\.5\.10"\.equals\(host\)\)/);
+  assert.match(java, /compositeContext\(prefs\.getString\(PREF_CA, ""\)\)/);
+  // 复合信任：系统默认根与用户 CA 都参与验签（try 一个 catch 再试另一个）
+  assert.match(java, /sysTmf\.init\(\(KeyStore\) null\)/);
+  assert.match(java, /a\.checkServerTrusted\(chain, authType\); \} catch[\s\S]*?b\.checkServerTrusted/);
+});
+
+ok('桥接脚本注入「导入本地 CA 证书」控件并处理状态/清除/事件刷新', () => {
+  assert.match(bridge, /id="nn-ca-file"/);
+  assert.match(bridge, /api\.setCa\(text\)/);
+  assert.match(bridge, /nn-ca-clear/);
+  assert.match(bridge, /addEventListener\('nn:settings-open'/);
+});
+
 console.log('\nShell assets tests: ' + pass + ' pass');

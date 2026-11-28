@@ -75,7 +75,8 @@ ok('页面脚本顺序：compat 最先、索引在 app.js 之前', () => {
 });
 
 ok('SW 缓存清单包含新增脚本且版本已升级', () => {
-  assert.match(sw, /const CACHE = 'nas-notes-v28'/);
+  const m = /const CACHE = 'nas-notes-v(\d+)'/.exec(sw);
+  assert.ok(m && Number(m[1]) >= 28, 'SW CACHE 应递增，当前 ' + (m && m[1]));
   assert.match(sw, /'\/compat\.js'/);
   assert.match(sw, /'\/nn-index\.js'/);
 });
