@@ -11,6 +11,8 @@ APK 的 `versionCode` / `versionName` 与此处版本号同步；PWA 只需强�
 - **修法**：`MIC` 常量改为 `TYPE_AUDIO_CAPTURE`，判断同时接受包含 `AUDIO_CAPTURE` 的资源名；`methodList`、桥方法、前端手势时窗逻辑均不变。
 - **模拟器实测**（Pura X View / HarmonyOS 7.0.0.107 / API 26）：修前 `permission allow=0` + `getUserMedia` 立即失败；修后录 4 s 生成 13 KB 加密音频附件、可内联播放、强杀重启后仍在（便签列表显示 🎤 2）。
 - **回归**：`tools/test_harmony_shell.js` 新增断言——必须在 `onPermissionRequest` 里出现 `TYPE_AUDIO_CAPTURE`，防止再退回按权限名比对。
+- **产物级复验**（版本号已升到 `3000001 / 3.1.0` 后的测试签名包，卸载重装 = 审核员首次使用场景）：启动即免密直入空库 → 新建 → 点录音弹出系统「允许"轻签"访问你的麦克风？」并附引导提示 → 点允许后**自动开始录音**（按钮变「⏹ 停止 Ns」）→ 停止生成 `录音-…webm`，`12s · 43 KB`，底部「1 段录音 / 已存本机」→ 内联播放走到 0:08 → 保存后列表显示 `🎤1` → 强杀重启仍免密直入且数据在位。
+- **签名两套并存（勿混）**：提审用 DevEco 自动签名（p7b 绑真机 UDID，模拟器装不上，`9568332/9568257`）；模拟器验证用 `tools/build-hap.ps1` 的 OpenHarmony 测试证书自签。两者签名不同**不能互相覆盖安装**，换签必须 `hdc uninstall` 后重装（会清空应用数据）。
 - 版本：鸿蒙 HAP `3000001 / 3.1.0`；APK 与 SW 无改动（仍 `30 / 3.0`、`nas-notes-v32`）。
 
 ## v3.0 — 2026-11-28
